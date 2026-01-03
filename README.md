@@ -1,4 +1,4 @@
-# ESP32-HVAC = Centrale HVAC Controller (Vervanging van Particle sketch)
+# ESP32-HVAC = Centrale HVAC Controller (Vervanging van Particle sketch: HVAC_Photon.cpp)
 
 **FiDel, 2 januari 2026**
 
