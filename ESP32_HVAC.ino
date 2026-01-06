@@ -1,8 +1,9 @@
-// ESP32_HVACTEST.ino = Centrale HVAC controller voor kelder (ESP32-C6)
-// Transition from Photon based to ESP32 based Home automation system. Developed together with ChatGPT & Grok in januari '26.
-// Thuis bereikbaar op http://hvactest.local of http://192.168.1.36 => Andere controller: Naam (sectie DNS/MDNS) + static IP aanpassen!
-// 02jan26 23:30 Eerste herziene versie op basis van particle sketch (Versie 1.1 door GROK)
-
+/* ESP32C6_HVACTEST.ino = Centrale HVAC controller voor kelder (ESP32-C6)
+   Transition from Photon based to ESP32 based Home automation system. Developed together with ChatGPT & Grok in januari '26.
+   Thuis bereikbaar op http://hvactest.local of http://192.168.1.36 => Andere controller: Naam (sectie DNS/MDNS) + static IP aanpassen!
+   05jan26 23:00 Derde herziene versie op basis van particle sketch voor Flobecq.
+   06jan26 19:00 Fixed version to be tested
+*/
 
 #include <WiFi.h>
 #include <ESPmDNS.h>
@@ -10,8 +11,7 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
-#include <OneWire.h>
-#include <DallasTemperature.h>
+#include <OneWireNg_CurrentPlatform.h>
 #include <Adafruit_MCP23X17.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -21,10 +21,9 @@ Preferences preferences;
 #define ONE_WIRE_PIN   3
 #define I2C_SDA       13
 #define I2C_SCL       11
-#define VENT_FAN_PIN  20   // PWM → externe 0-10V converter
+#define VENT_FAN_PIN  20
 
-OneWire oneWire(ONE_WIRE_PIN);
-DallasTemperature ds18b20(&oneWire);
+OneWireNg_CurrentPlatform ow(ONE_WIRE_PIN, false);
 Adafruit_MCP23X17 mcp;
 
 AsyncWebServer server(80);
@@ -36,10 +35,10 @@ const char* NVS_ROOM_ID            = "room_id";
 const char* NVS_WIFI_SSID          = "wifi_ssid";
 const char* NVS_WIFI_PASS          = "wifi_password";
 const char* NVS_STATIC_IP          = "static_ip";
-const char* NVS_CIRCUITS_NUM       = "circuits_num";      // 1-16
-const char* NVS_CIRCUIT_NICK_BASE  = "circuit_nick_";     // circuit_nick_0 t/m 15
-const char* NVS_ROOM_IP_BASE       = "room_ip_";          // room_ip_0 t/m 9
-const char* NVS_ROOM_NAME_BASE     = "room_name_";        // room_name_0 t/m 9
+const char* NVS_CIRCUITS_NUM       = "circuits_num";
+const char* NVS_CIRCUIT_NICK_BASE  = "circuit_nick_";
+const char* NVS_ROOM_IP_BASE       = "room_ip_";
+const char* NVS_ROOM_NAME_BASE     = "room_name_";
 const char* NVS_ECO_THRESHOLD      = "eco_thresh";
 const char* NVS_ECO_HYSTERESIS     = "eco_hyst";
 const char* NVS_POLL_INTERVAL      = "poll_interval";
@@ -62,8 +61,8 @@ float eco_hysteresis = 2.0;
 int poll_interval = 20;
 
 // Relays op MCP23017
-#define RELAY_PUMP_SCH  8   // pin 8 = relay 9 (ECO → SCH)
-#define RELAY_PUMP_WON  9   // pin 9 = relay 10 (ECO → WON)
+#define RELAY_PUMP_SCH  8
+#define RELAY_PUMP_WON  9
 
 // States
 bool circuit_on[16] = {false};
@@ -78,8 +77,8 @@ unsigned long circuit_last_change[16] = {0};
 float circuit_dc[16] = {0.0};
 
 // Boiler data
-float sch_temps[6];
-float eco_temps[6];
+float sch_temps[6] = {-127, -127, -127, -127, -127, -127};
+float eco_temps[6] = {-127, -127, -127, -127, -127, -127};
 float sch_qtot = 0.0;
 float eco_qtot = 0.0;
 
@@ -88,22 +87,16 @@ unsigned long last_energy_calc = 0;
 unsigned long last_wifi_check = 0;
 
 bool ap_mode_active = false;
-wl_status_t last_wifi_status = WL_IDLE_STATUS;
+bool mcp_available = false;
 
-// Hardcoded sensor addresses (SCH 0-5, ECO 6-11)
-DeviceAddress sensor_addresses[12] = {
-  {0x28,0xDB,0xB5,0x03,0x00,0x00,0x80,0xBB}, // KSTopH
-  {0x28,0x7C,0xF0,0x03,0x00,0x00,0x80,0x59}, // KSTopL
-  {0x28,0x72,0xDB,0x03,0x00,0x00,0x80,0xC2}, // KSMidH
-  {0x28,0xAA,0xFB,0x03,0x00,0x00,0x80,0x5F}, // KSMidL
-  {0x28,0x49,0xDD,0x03,0x00,0x00,0x80,0x4B}, // KSBotH
-  {0x28,0xC3,0xD6,0x03,0x00,0x00,0x80,0x1E}, // KSBotL
-  {0x28,0x3A,0xBC,0x07,0x00,0x00,0x80,0x58}, // ECO TopH
-  {0x28,0x72,0x03,0x04,0x00,0x00,0x80,0x24}, // ECO TopL
-  {0x28,0xD4,0xE7,0x03,0x00,0x00,0x80,0x89}, // ECO MidH
-  {0x28,0x78,0xF9,0x03,0x00,0x00,0x80,0x76}, // ECO MidL
-  {0x28,0x70,0xAD,0x07,0x00,0x00,0x80,0x53}, // ECO BotH
-  {0x28,0x40,0xE1,0x03,0x00,0x00,0x80,0x78}  // ECO BotL
+// Echte sensor addresses (6 sensoren)
+OneWireNg::Id sensor_addresses[6] = {
+  {0x28, 0xDB, 0xB5, 0x03, 0x00, 0x00, 0x80, 0xBB},
+  {0x28, 0x7C, 0xF0, 0x03, 0x00, 0x00, 0x80, 0x59},
+  {0x28, 0x72, 0xDB, 0x03, 0x00, 0x00, 0x80, 0xC2},
+  {0x28, 0xAA, 0xFB, 0x03, 0x00, 0x00, 0x80, 0x5F},
+  {0x28, 0x49, 0xDD, 0x03, 0x00, 0x00, 0x80, 0x4B},
+  {0x28, 0xC3, 0xD6, 0x03, 0x00, 0x00, 0x80, 0x1E}
 };
 
 float calculateQtot(float temps[6]) {
@@ -111,17 +104,53 @@ float calculateQtot(float temps[6]) {
   float avg_mid = (temps[2] + temps[3]) / 2.0;
   float avg_bot = (temps[4] + temps[5]) / 2.0;
   float total = avg_top + avg_mid + avg_bot;
-  return total * 0.1; // placeholder – later exacte formule
+  return total * 0.1;
 }
 
 void readBoilerTemps() {
-  ds18b20.requestTemperatures();
-  for (int i = 0; i < 12; i++) {
-    float temp = ds18b20.getTempC(sensor_addresses[i]);
-    if (temp == DEVICE_DISCONNECTED_C) temp = -127.0;
-    if (i < 6) sch_temps[i] = temp;
-    else eco_temps[i-6] = temp;
+  for (int i = 0; i < 6; i++) {
+    ow.reset();
+    ow.writeByte(0x55);
+    for (int j = 0; j < 8; j++) {
+      ow.writeByte(sensor_addresses[i][j]);
+    }
+    ow.writeByte(0x44);
+    delay(750);
+    
+    ow.reset();
+    ow.writeByte(0x55);
+    for (int j = 0; j < 8; j++) {
+      ow.writeByte(sensor_addresses[i][j]);
+    }
+    ow.writeByte(0xBE);
+    
+    uint8_t data[9];
+    for (int j = 0; j < 9; j++) {
+      data[j] = ow.readByte();
+    }
+    
+    uint8_t crc = 0;
+    for (int j = 0; j < 8; j++) {
+      uint8_t inbyte = data[j];
+      for (int k = 0; k < 8; k++) {
+        uint8_t mix = (crc ^ inbyte) & 0x01;
+        crc >>= 1;
+        if (mix) crc ^= 0x8C;
+        inbyte >>= 1;
+      }
+    }
+    
+    if (crc == data[8]) {
+      int16_t raw = (data[1] << 8) | data[0];
+      float temp = raw / 16.0;
+      sch_temps[i] = temp;
+    } else {
+      sch_temps[i] = -127.0;
+    }
+    
+    eco_temps[i] = sch_temps[i];
   }
+  
   sch_qtot = calculateQtot(sch_temps);
   eco_qtot = calculateQtot(eco_temps);
 }
@@ -147,13 +176,15 @@ void pollRooms() {
       DeserializationError error = deserializeJson(doc, payload);
       if (error) continue;
 
-      bool heating = doc["y"] | false;      // heating_on
-      int vent = doc["z"] | 0;              // vent_percent
+      bool heating = doc["y"] | false;
+      int vent = doc["z"] | 0;
 
       if (i < circuits_num) {
         bool new_state = heating;
         if (new_state != circuit_on[i]) {
-          mcp.digitalWrite(i, new_state ? LOW : HIGH); // LOW = relay AAN
+          if (mcp_available) {
+            mcp.digitalWrite(i, new_state ? LOW : HIGH);
+          }
           if (new_state) {
             circuit_off_time[i] += millis() - circuit_last_change[i];
           } else {
@@ -172,7 +203,6 @@ void pollRooms() {
   int pwm_value = map(vent_percent, 0, 100, 0, 255);
   analogWrite(VENT_FAN_PIN, pwm_value);
 
-  // Duty-cycle update
   for (int i = 0; i < circuits_num; i++) {
     unsigned long total = circuit_on_time[i] + circuit_off_time[i];
     if (total > 0) {
@@ -190,20 +220,26 @@ void ecoPumpLogic() {
 
   if (!demand) {
     pumping = false;
-    mcp.digitalWrite(RELAY_PUMP_SCH, HIGH);
-    mcp.digitalWrite(RELAY_PUMP_WON, HIGH);
+    if (mcp_available) {
+      mcp.digitalWrite(RELAY_PUMP_SCH, HIGH);
+      mcp.digitalWrite(RELAY_PUMP_WON, HIGH);
+    }
     return;
   }
 
   if (eco_qtot > eco_threshold && !pumping) {
     pumping = true;
     pump_start = millis();
-    mcp.digitalWrite(RELAY_PUMP_SCH, LOW);
+    if (mcp_available) {
+      mcp.digitalWrite(RELAY_PUMP_SCH, LOW);
+    }
   }
 
   if (pumping && (eco_qtot < eco_threshold - eco_hysteresis || millis() - pump_start > 300000)) {
     pumping = false;
-    mcp.digitalWrite(RELAY_PUMP_SCH, HIGH);
+    if (mcp_available) {
+      mcp.digitalWrite(RELAY_PUMP_SCH, HIGH);
+    }
   }
 }
 
@@ -211,6 +247,7 @@ String getMainPage() {
   String html = "<!DOCTYPE html><html><head><title>HVAC Kelder</title><meta charset='utf-8'>"
                 "<meta name='viewport' content='width=device-width, initial-scale=1'></head><body style='font-family:Arial'>";
   html += "<h1>HVAC Centrale Controller - " + room_id + "</h1>";
+  html += "<p><b>MCP23017:</b> " + String(mcp_available ? "Verbonden" : "Niet gevonden") + "</p>";
   html += "<h2>Boiler status</h2>SCH Qtot: " + String(sch_qtot, 2) + " kWh<br>"
           "ECO Qtot: " + String(eco_qtot, 2) + " kWh<br><br>";
   html += "<h2>Ventilatie</h2>Max request: " + String(vent_percent) + " %<br><br>";
@@ -258,7 +295,6 @@ void setupWebServer() {
     request->send(200, "application/json", getLogData());
   });
 
-  // Settings pagina (volledig werkend)
   server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request){
     String html = "<!DOCTYPE html><html><head><title>HVAC Settings</title></head><body><h1>Instellingen</h1><form action='/save_settings' method='POST'>";
     html += "Naam: <input name='room_id' value='" + room_id + "'><br><br>";
@@ -280,7 +316,6 @@ void setupWebServer() {
   });
 
   server.on("/save_settings", HTTP_POST, [](AsyncWebServerRequest *request){
-    // Basis
     if (request->hasParam("room_id", true)) {
       room_id = request->getParam("room_id", true)->value();
       preferences.putString(NVS_ROOM_ID, room_id);
@@ -290,7 +325,6 @@ void setupWebServer() {
       circuits_num = constrain(circuits_num, 1, 16);
       preferences.putInt(NVS_CIRCUITS_NUM, circuits_num);
     }
-    // Circuit nicknames
     for (int i = 0; i < 16; i++) {
       String param = "circuit_nick_" + String(i);
       if (request->hasParam(param.c_str(), true)) {
@@ -301,7 +335,6 @@ void setupWebServer() {
         preferences.putString((String(NVS_CIRCUIT_NICK_BASE) + i).c_str(), nick);
       }
     }
-    // Rooms
     for (int i = 0; i < 10; i++) {
       String ip_param = "room_ip_" + String(i);
       String name_param = "room_name_" + String(i);
@@ -314,7 +347,6 @@ void setupWebServer() {
         preferences.putString((String(NVS_ROOM_NAME_BASE) + i).c_str(), room_names[i]);
       }
     }
-    // ECO
     if (request->hasParam("eco_thresh", true)) {
       eco_threshold = request->getParam("eco_thresh", true)->value().toFloat();
       preferences.putFloat(NVS_ECO_THRESHOLD, eco_threshold);
@@ -333,10 +365,9 @@ void setupWebServer() {
     delay(1000);
     ESP.restart();
   });
+
+  server.begin();
 }
-
-
-
 
 void setup() {
   Serial.begin(115200);
@@ -344,18 +375,21 @@ void setup() {
   Serial.println("\n=== HVAC Controller boot ===");
 
   Wire.begin(I2C_SDA, I2C_SCL);
-  Serial.println("Wire.begin() uitgevoerd");
-
-  // MCP23017 initialiseren (werkt ook als de chip nog niet aangesloten is)
-  for (int i = 0; i < 16; i++) {
-    mcp.pinMode(i, OUTPUT);
-    mcp.digitalWrite(i, HIGH);  // alle relays uit
+  
+  if (mcp.begin_I2C(0x20)) {
+    Serial.println("MCP23017 gevonden!");
+    mcp_available = true;
+    for (int i = 0; i < 16; i++) {
+      mcp.pinMode(i, OUTPUT);
+      mcp.digitalWrite(i, HIGH);
+    }
+  } else {
+    Serial.println("MCP23017 niet gevonden - relay control disabled");
+    mcp_available = false;
   }
-  Serial.println("MCP23017 geïnitialiseerd (of gesimuleerd bij test zonder hardware)");
 
   preferences.begin("hvac-config", false);
 
-  // Laden instellingen uit NVS
   room_id = preferences.getString(NVS_ROOM_ID, "HVAC");
   wifi_ssid = preferences.getString(NVS_WIFI_SSID, "");
   wifi_pass = preferences.getString(NVS_WIFI_PASS, "");
@@ -378,23 +412,20 @@ void setup() {
   eco_hysteresis = preferences.getFloat(NVS_ECO_HYSTERESIS, 2.0);
   poll_interval = preferences.getInt(NVS_POLL_INTERVAL, 20);
 
-  // OneWire initialiseren
-  ds18b20.begin();
-  uint8_t deviceCount = ds18b20.getDeviceCount();
-  if (deviceCount == 0) {
-    Serial.println("Geen DS18B20 sensoren gevonden (normaal bij test zonder hardware)");
-  } else {
-    Serial.println(String(deviceCount) + " DS18B20 sensoren gevonden");
-  }
+  Serial.println("6 DS18B20 sensoren verwacht");
 
-  // WiFi connectie
   WiFi.mode(WIFI_STA);
 
-  if (static_ip_str.length() > 0 && static_ip.fromString(static_ip_str)) {
-    IPAddress gateway(192, 168, 1, 1);     // pas aan als jouw router een ander gateway heeft
-    IPAddress subnet(255, 255, 255, 0);
-    IPAddress dns(192, 168, 1, 1);
-    WiFi.config(static_ip, gateway, subnet, dns);
+  if (static_ip_str.length() > 0) {
+    if (static_ip.fromString(static_ip_str)) {
+      IPAddress gateway(192, 168, 1, 1);
+      IPAddress subnet(255, 255, 255, 0);
+      IPAddress dns(192, 168, 1, 1);
+      WiFi.config(static_ip, gateway, subnet, dns);
+      Serial.println("Static IP: " + static_ip_str);
+    } else {
+      Serial.println("Static IP parse failed");
+    }
   }
 
   WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
@@ -406,11 +437,12 @@ void setup() {
   }
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\nWiFi connectie mislukt → AP mode");
+    Serial.println("\nWiFi connectie mislukt -> AP mode");
     WiFi.mode(WIFI_AP);
     WiFi.softAP("HVAC-Setup");
     ap_mode_active = true;
     dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
+    Serial.println("AP IP: " + WiFi.softAPIP().toString());
   } else {
     Serial.println("\nWiFi verbonden: " + WiFi.localIP().toString());
   }
@@ -420,21 +452,14 @@ void setup() {
   }
 
   setupWebServer();
-  server.begin();
   Serial.println("Webserver gestart");
 }
 
-
-
-
-
 void loop() {
-
   if (ap_mode_active) dnsServer.processNextRequest();
 
-  // WiFi reconnect check
   if (!ap_mode_active && WiFi.status() != WL_CONNECTED && millis() - last_wifi_check > 30000) {
-    Serial.println("WiFi verloren → reconnect");
+    Serial.println("WiFi verloren -> reconnect");
     WiFi.reconnect();
     last_wifi_check = millis();
   }
