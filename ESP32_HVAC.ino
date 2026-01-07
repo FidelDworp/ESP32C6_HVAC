@@ -1,16 +1,9 @@
 /* ESP32C6_HVACTEST.ino = Centrale HVAC controller voor kelder (ESP32-C6) op basis van particle sketch voor Flobecq
 Transition from Photon based to ESP32 based Home automation system. Developed together with ChatGPT & Grok in januari '26.
 Thuis bereikbaar op http://hvactest.local of http://192.168.1.36 => Andere controller: Naam (sectie DNS/MDNS) + static IP aanpassen!
-07jan26 15:00 Version 4 - Circuit-centric met thermostaat inputs
-
-Component       Wijziging
-Data model      Circuit struct met alle properties
-MCP pins        7=feedback, 10-12=thermostaten
-Polling         Prioriteit: 1) Tstat, 2) HTTP
-Settings        Circuit boxen met alle velden
-Homepage        7 kolommen + totalen + status
-NVS             6 keys per circuit (x16)
-
+07jan26 15:50 Version 5 - Corrections
+- On /settings page: Hardwired TSTAT Pins are not saved.
+- On main page: Change columns (IP, mDNS, TSTAT...)
 */
 
 
@@ -392,33 +385,67 @@ String getMainPage() {
       <table>
         <tr><td class="label">Max request</td><td class="value">)rawliteral" + String(vent_percent) + " %" + R"rawliteral(</td></tr>
       </table>
-
-      <div class="group-title">VERWARMINGSCIRCUITS</div>
+      <div class="group-title">CIRCUITS</div>
       <table>
-        <tr class="header-row"><td class="label">#</td><td class="value">Naam</td><td class="value">Status</td><td class="value">Pomp</td><td class="value">Vermogen</td><td class="value">Vent %</td><td class="value">Duty %</td></tr>
+        <tr class="header-row"><td class="label">#</td><td class="value">Naam</td><td class="value">IP</td><td class="value">mDNS</td><td class="value">TSTAT</td><td class="value">Pomp</td><td class="value">Vermogen</td><td class="value">Vent %</td><td class="value">Duty %</td></tr>
 )rawliteral";
   
+
+
+
   for (int i = 0; i < circuits_num; i++) {
-    String status_icon = circuits[i].online ? "✓ OK" : "✗ NA!";
-    String status_class = circuits[i].online ? "status-ok" : "status-na";
+    // IP status
+    String ip_status = "-";
+    String ip_class = "";
+    if (circuits[i].ip.length() > 0) {
+      ip_status = circuits[i].online ? "✓" : "✗";
+      ip_class = circuits[i].online ? "status-ok" : "status-na";
+    }
+    
+    // mDNS status
+    String mdns_status = "-";
+    String mdns_class = "";
+    if (circuits[i].mdns.length() > 0) {
+      mdns_status = circuits[i].online ? "✓" : "✗";
+      mdns_class = circuits[i].online ? "status-ok" : "status-na";
+    }
+    
+    // TSTAT status
+    String tstat_status = "-";
+    String tstat_class = "";
+    if (circuits[i].has_tstat && circuits[i].tstat_pin < 13 && mcp_available) {
+      bool tstat_on = (mcp.digitalRead(circuits[i].tstat_pin) == LOW);
+      tstat_status = tstat_on ? "ON" : "OFF";
+      tstat_class = tstat_on ? "status-ok" : "";
+    } else if (circuits[i].has_tstat) {
+      tstat_status = "?";
+    }
+    
     String pump = circuits[i].heating_on ? "AAN" : "UIT";
     String power = circuits[i].heating_on ? String(circuits[i].power_kw, 1) + " kW" : "0 kW";
     
     html += "<tr><td class=\"label\">" + String(i + 1) + "</td>";
     html += "<td class=\"value\">" + circuits[i].name + "</td>";
-    html += "<td class=\"value " + status_class + "\">" + status_icon + "</td>";
+    html += "<td class=\"value " + ip_class + "\">" + ip_status + "</td>";
+    html += "<td class=\"value " + mdns_class + "\">" + mdns_status + "</td>";
+    html += "<td class=\"value " + tstat_class + "\">" + tstat_status + "</td>";
     html += "<td class=\"value\">" + pump + "</td>";
     html += "<td class=\"value\">" + power + "</td>";
     html += "<td class=\"value\">" + String(circuits[i].vent_request) + " %</td>";
     html += "<td class=\"value\">" + String(circuits[i].duty_cycle, 1) + " %</td></tr>";
   }
+
+
+
   
   html += R"rawliteral(
-        <tr style="border-top:2px solid #336699;"><td colspan="4" class="label"><b>TOTAAL</b></td>
+        <tr style="border-top:2px solid #336699;"><td colspan="5" class="label"><b>TOTAAL</b></td>
+        <td class="value"></td>
         <td class="value"><b>)rawliteral" + String(total_power, 1) + " kW" + R"rawliteral(</b></td>
         <td class="value"><b>)rawliteral" + String(vent_percent) + " %" + R"rawliteral(</b></td>
         <td class="value"></td></tr>
       </table>
+
       <p style="text-align:center;margin-top:30px;"><a href="/settings" style="color:#336699;text-decoration:underline;font-size:16px;">→ Instellingen</a></p>
     </div>
   </div>
@@ -543,12 +570,12 @@ server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request){
       circuitsHtml += "<tr><td class=\"label\">mDNS naam</td><td class=\"input\"><input type=\"text\" name=\"circuit_mdns_" + String(i) + "\" value=\"" + circuits[i].mdns + "\" placeholder=\"keuken\"></td></tr>";
       circuitsHtml += "<tr><td class=\"label\">Vermogen (kW)</td><td class=\"input\"><input type=\"number\" step=\"0.001\" name=\"circuit_power_" + String(i) + "\" value=\"" + String(circuits[i].power_kw, 3) + "\"></td></tr>";
       circuitsHtml += "<tr><td class=\"label\">Hardwired thermostaat</td><td class=\"input\">";
-      circuitsHtml += "<input type=\"checkbox\" name=\"circuit_tstat_" + String(i) + "\" value=\"1\"" + String(circuits[i].has_tstat ? " checked" : "") + "> ";
-      circuitsHtml += "Pin: <select name=\"circuit_tstat_pin_" + String(i) + "\">";
+      circuitsHtml += "<input type=\"checkbox\" name=\"circuit_tstat_" + String(i) + "\" value=\"1\"" + String(circuits[i].has_tstat ? " checked" : "") + " id=\"tstat_check_" + String(i) + "\"> ";
+      circuitsHtml += "Pin: <select name=\"circuit_tstat_pin_" + String(i) + "\" id=\"tstat_pin_" + String(i) + "\">";
       circuitsHtml += "<option value=\"255\"" + String(circuits[i].tstat_pin == 255 ? " selected" : "") + ">Geen</option>";
-      circuitsHtml += "<option value=\"10\"" + String(circuits[i].tstat_pin == 10 ? " selected" : "") + ">Pin 10 (ZP)</option>";
-      circuitsHtml += "<option value=\"11\"" + String(circuits[i].tstat_pin == 11 ? " selected" : "") + ">Pin 11 (EP)</option>";
-      circuitsHtml += "<option value=\"12\"" + String(circuits[i].tstat_pin == 12 ? " selected" : "") + ">Pin 12 (KK)</option>";
+      circuitsHtml += "<option value=\"10\"" + String(circuits[i].tstat_pin == 10 ? " selected" : "") + ">Pin 10</option>";
+      circuitsHtml += "<option value=\"11\"" + String(circuits[i].tstat_pin == 11 ? " selected" : "") + ">Pin 11</option>";
+      circuitsHtml += "<option value=\"12\"" + String(circuits[i].tstat_pin == 12 ? " selected" : "") + ">Pin 12</option>";
       circuitsHtml += "</select></td></tr>";
       circuitsHtml += "</table></div>";
     }
@@ -693,59 +720,114 @@ server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html; charset=utf-8", html);
   });
 
-  server.on("/save_settings", HTTP_GET, [](AsyncWebServerRequest *request){
-    // WiFi
-    String ssid_sel = request->arg("wifi_ssid");
-    String ssid_manual = request->arg("wifi_ssid_manual");
-    if (ssid_manual.length() > 0) preferences.putString(NVS_WIFI_SSID, ssid_manual);
-    else if (ssid_sel.length() > 0) preferences.putString(NVS_WIFI_SSID, ssid_sel);
-    if (request->hasArg("wifi_pass")) preferences.putString(NVS_WIFI_PASS, request->arg("wifi_pass"));
-    preferences.putString(NVS_STATIC_IP, request->arg("static_ip"));
+
+
+
+server.on("/save_settings", HTTP_GET, [](AsyncWebServerRequest *request){
+  Serial.println("\n=== SAVE SETTINGS CALLED ===");
+  
+  // WiFi
+  String ssid_sel = request->arg("wifi_ssid");
+  String ssid_manual = request->arg("wifi_ssid_manual");
+  Serial.printf("WiFi SSID sel='%s' manual='%s'\n", ssid_sel.c_str(), ssid_manual.c_str());
+  
+  if (ssid_manual.length() > 0) {
+    preferences.putString(NVS_WIFI_SSID, ssid_manual);
+  } else if (ssid_sel.length() > 0) {
+    preferences.putString(NVS_WIFI_SSID, ssid_sel);
+  }
+  
+  if (request->hasArg("wifi_pass")) {
+    preferences.putString(NVS_WIFI_PASS, request->arg("wifi_pass"));
+  }
+  preferences.putString(NVS_STATIC_IP, request->arg("static_ip"));
+  
+  // Basis
+  preferences.putString(NVS_ROOM_ID, request->arg("room_id"));
+  preferences.putInt(NVS_CIRCUITS_NUM, request->arg("circuits_num").toInt());
+  preferences.putFloat(NVS_ECO_THRESHOLD, request->arg("eco_thresh").toFloat());
+  preferences.putFloat(NVS_ECO_HYSTERESIS, request->arg("eco_hyst").toFloat());
+  preferences.putInt(NVS_POLL_INTERVAL, request->arg("poll_interval").toInt());
+  
+  Serial.println("Basis settings saved");
+  
+  // Sensors
+  for (int i = 0; i < 6; i++) {
+    String param = "sensor_nick_" + String(i);
+    if (request->hasArg(param.c_str())) {
+      String nick = request->arg(param.c_str());
+      nick.trim();
+      if (nick.length() == 0) nick = "Sensor " + String(i + 1);
+      preferences.putString((String(NVS_SENSOR_NICK_BASE) + i).c_str(), nick);
+    }
+  }
+  
+  Serial.println("Sensors saved");
+  
+  // Circuits - MET UITGEBREIDE DEBUG
+  Serial.println("\n--- SAVING CIRCUITS ---");
+  
+  for (int i = 0; i < 16; i++) {
+    String prefix = "circuit_";
     
-    // Basis
-    preferences.putString(NVS_ROOM_ID, request->arg("room_id"));
-    preferences.putInt(NVS_CIRCUITS_NUM, request->arg("circuits_num").toInt());
-    preferences.putFloat(NVS_ECO_THRESHOLD, request->arg("eco_thresh").toFloat());
-    preferences.putFloat(NVS_ECO_HYSTERESIS, request->arg("eco_hyst").toFloat());
-    preferences.putInt(NVS_POLL_INTERVAL, request->arg("poll_interval").toInt());
+    // Name
+    String name_key = prefix + "name_" + String(i);
+    String name_val = request->arg(name_key.c_str());
+    if (name_val.length() == 0) name_val = "Circuit " + String(i + 1);
+    preferences.putString(name_key.c_str(), name_val);
     
-    // Sensors
-    for (int i = 0; i < 6; i++) {
-      String param = "sensor_nick_" + String(i);
-      if (request->hasArg(param.c_str())) {
-        String nick = request->arg(param.c_str());
-        nick.trim();
-        if (nick.length() == 0) nick = "Sensor " + String(i + 1);
-        preferences.putString((String(NVS_SENSOR_NICK_BASE) + i).c_str(), nick);
-      }
+    // IP
+    String ip_key = prefix + "ip_" + String(i);
+    String ip_val = request->arg(ip_key.c_str());
+    preferences.putString(ip_key.c_str(), ip_val);
+    
+    // mDNS
+    String mdns_key = prefix + "mdns_" + String(i);
+    String mdns_val = request->arg(mdns_key.c_str());
+    preferences.putString(mdns_key.c_str(), mdns_val);
+    
+    // Power
+    String power_key = prefix + "power_" + String(i);
+    String power_str = request->arg(power_key.c_str());
+    float power_val = power_str.toFloat();
+    preferences.putFloat(power_key.c_str(), power_val);
+    
+    // Thermostaat checkbox
+    String tstat_key = prefix + "tstat_" + String(i);
+    bool has_tstat = request->hasArg(tstat_key.c_str());
+    preferences.putBool(tstat_key.c_str(), has_tstat);
+    
+    // Thermostaat pin - KRITISCH DEBUG
+    String pin_key = prefix + "tstat_pin_" + String(i);
+    bool has_pin_arg = request->hasArg(pin_key.c_str());
+    String pin_str = request->arg(pin_key.c_str());
+    int pin_val = pin_str.toInt();
+    
+    // Validatie
+    if (pin_val != 10 && pin_val != 11 && pin_val != 12) {
+      pin_val = 255;
     }
     
-    // Circuits
-    for (int i = 0; i < 16; i++) {
-      String prefix = "circuit_";
-      if (request->hasArg((prefix + "name_" + i).c_str())) {
-        preferences.putString((prefix + "name_" + i).c_str(), request->arg((prefix + "name_" + i).c_str()));
-      }
-      if (request->hasArg((prefix + "ip_" + i).c_str())) {
-        preferences.putString((prefix + "ip_" + i).c_str(), request->arg((prefix + "ip_" + i).c_str()));
-      }
-      if (request->hasArg((prefix + "mdns_" + i).c_str())) {
-        preferences.putString((prefix + "mdns_" + i).c_str(), request->arg((prefix + "mdns_" + i).c_str()));
-      }
-      if (request->hasArg((prefix + "power_" + i).c_str())) {
-        preferences.putFloat((prefix + "power_" + i).c_str(), request->arg((prefix + "power_" + i).c_str()).toFloat());
-      }
-      bool has_tstat = request->hasArg((prefix + "tstat_" + i).c_str());
-      preferences.putBool((prefix + "tstat_" + i).c_str(), has_tstat);
-      if (request->hasArg((prefix + "tstat_pin_" + i).c_str())) {
-        preferences.putInt((prefix + "tstat_pin_" + i).c_str(), request->arg((prefix + "tstat_pin_" + i).c_str()).toInt());
-      }
-    }
+    preferences.putInt(pin_key.c_str(), pin_val);
     
-    request->send(200, "text/html", "<h2 style='text-align:center;color:#336699;'>Opgeslagen! Rebooting...</h2>");
-    delay(800);
-    ESP.restart();
-  });
+    // UITGEBREIDE DEBUG
+    Serial.printf("Circuit %d:\n", i);
+    Serial.printf("  name='%s'\n", name_val.c_str());
+    Serial.printf("  tstat=%d\n", has_tstat);
+    Serial.printf("  pin_key='%s' hasArg=%d raw='%s' parsed=%d saved=%d\n", 
+      pin_key.c_str(), has_pin_arg, pin_str.c_str(), pin_val, pin_val);
+    
+    // Verificatie: direct teruglezen
+    int verify = preferences.getInt(pin_key.c_str(), -1);
+    Serial.printf("  VERIFY: read back from NVS = %d\n", verify);
+  }
+  
+  Serial.println("--- CIRCUITS SAVED ---\n");
+  
+  request->send(200, "text/html", "<h2 style='text-align:center;color:#336699;'>Opgeslagen! Rebooting...</h2>");
+  delay(2000); // Langere delay zodat Serial output compleet is
+  ESP.restart();
+});
 
   server.begin();
 }
@@ -825,6 +907,12 @@ void setup() {
     circuits[i].has_tstat = preferences.getBool((prefix + "tstat_" + i).c_str(), false);
     circuits[i].tstat_pin = preferences.getInt((prefix + "tstat_pin_" + i).c_str(), 255);
     
+    // DEBUG OUTPUT TOEVOEGEN:
+    if (i < circuits_num) {
+      Serial.printf("Loaded circuit %d: tstat=%d pin=%d from NVS\n", 
+        i, circuits[i].has_tstat, circuits[i].tstat_pin);
+    }
+
     // Runtime init
     circuits[i].online = false;
     circuits[i].heating_on = false;
