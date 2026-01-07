@@ -2,10 +2,10 @@
 Transition from Photon based to ESP32 based Home automation system. Developed together with ChatGPT & Grok in januari '26.
 Thuis bereikbaar op http://hvactest.local of http://192.168.1.36 => Andere controller: Naam (sectie DNS/MDNS) + static IP aanpassen!
 07jan26 15:50 Version 5 - Corrections
-- On /settings page: Hardwired TSTAT Pins are not saved.
-- On main page: Change columns (IP, mDNS, TSTAT...)
-*/
+- De HVAC controller probeert te pollen naar Room controllers waarvan de IP adressen en Bonjour namen ingevuld zijn in de /settings pagina maar slaagt er niet in.
 
+FIXES:
+*/
 
 // DEEL 1: Headers, Structs & Globals
 
@@ -163,6 +163,25 @@ void checkPumpFeedback(float total_power) {
 void pollRooms() {
   if (millis() - last_poll < (unsigned long)poll_interval * 1000) return;
   last_poll = millis();
+
+  Serial.println("\n=== POLLING ROOMS ===");
+  
+  // Check WiFi status
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WARNING: WiFi disconnected! IP: " + WiFi.localIP().toString());
+    Serial.println("Attempting reconnect...");
+    WiFi.reconnect();
+    delay(2000);
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("Reconnect failed!");
+      return;
+    } else {
+      Serial.println("Reconnected! IP: " + WiFi.localIP().toString());
+    }
+  } else {
+    Serial.printf("WiFi OK - IP: %s, RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+  }
+
   vent_percent = 0;
   float total_power = 0.0;
 
@@ -172,36 +191,83 @@ void pollRooms() {
     // PRIORITEIT 1: Hardwired thermostaat
     if (circuits[i].has_tstat && mcp_available && circuits[i].tstat_pin < 13) {
       bool tstat_on = (mcp.digitalRead(circuits[i].tstat_pin) == LOW);
+      Serial.printf("c%d: TSTAT pin %d = %s\n", i, circuits[i].tstat_pin, tstat_on ? "ON" : "OFF");
       if (tstat_on) heating_demand = true;
     }
     
     // PRIORITEIT 2: HTTP poll
     if (circuits[i].ip.length() > 0 || circuits[i].mdns.length() > 0) {
+      WiFiClient client;
       HTTPClient http;
-      String url = circuits[i].ip.length() > 0 
-        ? "http://" + circuits[i].ip + "/json"
-        : "http://" + circuits[i].mdns + ".local/json";
-      http.begin(url);
-      http.setTimeout(5000);
-      if (http.GET() == 200) {
+      
+      String url;
+      if (circuits[i].ip.length() > 0) {
+        url = "http://" + circuits[i].ip + "/status.json";
+      } else {
+        url = "http://" + circuits[i].mdns + ".local/status.json";
+      }
+      
+      Serial.printf("c%d: Polling %s\n", i, url.c_str());
+      Serial.print("    ");
+
+      http.begin(client, url);
+      http.setTimeout(8000);  // 8 seconden timeout
+      http.setConnectTimeout(3000);  // 3 sec voor connect
+      http.setReuse(false);  // Geen connection reuse
+      
+      int httpCode = http.GET();
+
+      Serial.printf("Result: %d", httpCode);
+
+      if (httpCode == 200) {
+        String payload = http.getString();
+        Serial.printf(" (%d bytes) ✓\n", payload.length());
+        
         circuits[i].online = true;
         circuits[i].last_seen = millis();
+        
         DynamicJsonDocument doc(2048);
-        deserializeJson(doc, http.getString());
-        bool room_heating = doc["y"] | false;
-        int room_vent = doc["z"] | 0;
-        if (room_heating) heating_demand = true;
-        if (room_vent > vent_percent) vent_percent = room_vent;
-        circuits[i].vent_request = room_vent;
+        DeserializationError error = deserializeJson(doc, payload);
+        
+        if (!error) {
+          int y_val = doc["y"] | 0;
+          int z_val = doc["z"] | 0;
+          bool room_heating = (y_val == 1);
+          int room_vent = z_val;
+          
+          Serial.printf("    y=%d z=%d => heating=%d vent=%d\n", y_val, z_val, room_heating, room_vent);
+          
+          if (room_heating) heating_demand = true;
+          if (room_vent > vent_percent) vent_percent = room_vent;
+          circuits[i].vent_request = room_vent;
+        } else {
+          Serial.printf("    JSON parse error: %s\n", error.c_str());
+        }
+      } else if (httpCode == 404) {
+        Serial.printf(" - 404 Not Found\n");
+        circuits[i].online = false;
+        circuits[i].vent_request = 0;
+      } else if (httpCode < 0) {
+        Serial.printf(" - Timeout/Unreachable\n");
+        circuits[i].online = false;
+        circuits[i].vent_request = 0;
       } else {
+        Serial.printf(" - HTTP Error\n");
         circuits[i].online = false;
         circuits[i].vent_request = 0;
       }
+      
       http.end();
+      client.stop();
+      delay(100);  // Kleine pauze tussen requests
     }
     
     // Relay schakelen + duty-cycle
     if (heating_demand != circuits[i].heating_on) {
+      Serial.printf("c%d: Relay %s -> %s\n", i, 
+        circuits[i].heating_on ? "ON" : "OFF",
+        heating_demand ? "ON" : "OFF");
+        
       if (mcp_available && i < 7) {
         mcp.digitalWrite(i, heating_demand ? LOW : HIGH);
       }
@@ -224,6 +290,7 @@ void pollRooms() {
     }
   }
   
+  Serial.printf("Total power: %.2f kW, Vent: %d%%\n", total_power, vent_percent);
   analogWrite(VENT_FAN_PIN, map(vent_percent, 0, 100, 0, 255));
   checkPumpFeedback(total_power);
 }
@@ -294,7 +361,7 @@ String getLogData() {
 }
 
 
-// DEEL 3 - 1) Web Server functies)
+// DEEL 3 - 1) Web Server functies
 
 String getMainPage() {
   float total_power = 0.0;
@@ -390,9 +457,6 @@ String getMainPage() {
         <tr class="header-row"><td class="label">#</td><td class="value">Naam</td><td class="value">IP</td><td class="value">mDNS</td><td class="value">TSTAT</td><td class="value">Pomp</td><td class="value">Vermogen</td><td class="value">Vent %</td><td class="value">Duty %</td></tr>
 )rawliteral";
   
-
-
-
   for (int i = 0; i < circuits_num; i++) {
     // IP status
     String ip_status = "-";
@@ -434,9 +498,6 @@ String getMainPage() {
     html += "<td class=\"value\">" + String(circuits[i].vent_request) + " %</td>";
     html += "<td class=\"value\">" + String(circuits[i].duty_cycle, 1) + " %</td></tr>";
   }
-
-
-
   
   html += R"rawliteral(
         <tr style="border-top:2px solid #336699;"><td colspan="5" class="label"><b>TOTAAL</b></td>
@@ -567,7 +628,11 @@ server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request){
       circuitsHtml += "<table class=\"form-table\">";
       circuitsHtml += "<tr><td class=\"label\">Naam</td><td class=\"input\"><input type=\"text\" name=\"circuit_name_" + String(i) + "\" value=\"" + circuits[i].name + "\"></td></tr>";
       circuitsHtml += "<tr><td class=\"label\">IP adres</td><td class=\"input\"><input type=\"text\" name=\"circuit_ip_" + String(i) + "\" value=\"" + circuits[i].ip + "\" placeholder=\"192.168.1.50\"></td></tr>";
-      circuitsHtml += "<tr><td class=\"label\">mDNS naam</td><td class=\"input\"><input type=\"text\" name=\"circuit_mdns_" + String(i) + "\" value=\"" + circuits[i].mdns + "\" placeholder=\"keuken\"></td></tr>";
+      
+      circuitsHtml += "<tr><td class=\"label\">mDNS naam</td><td class=\"input\">";
+      circuitsHtml += "<input type=\"text\" name=\"circuit_mdns_" + String(i) + "\" value=\"" + circuits[i].mdns + "\" placeholder=\"eetplaats (ZONDER .local!)\">";
+      circuitsHtml += "</td></tr>";
+
       circuitsHtml += "<tr><td class=\"label\">Vermogen (kW)</td><td class=\"input\"><input type=\"number\" step=\"0.001\" name=\"circuit_power_" + String(i) + "\" value=\"" + String(circuits[i].power_kw, 3) + "\"></td></tr>";
       circuitsHtml += "<tr><td class=\"label\">Hardwired thermostaat</td><td class=\"input\">";
       circuitsHtml += "<input type=\"checkbox\" name=\"circuit_tstat_" + String(i) + "\" value=\"1\"" + String(circuits[i].has_tstat ? " checked" : "") + " id=\"tstat_check_" + String(i) + "\"> ";
@@ -720,9 +785,6 @@ server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html; charset=utf-8", html);
   });
 
-
-
-
 server.on("/save_settings", HTTP_GET, [](AsyncWebServerRequest *request){
   Serial.println("\n=== SAVE SETTINGS CALLED ===");
   
@@ -764,82 +826,104 @@ server.on("/save_settings", HTTP_GET, [](AsyncWebServerRequest *request){
   
   Serial.println("Sensors saved");
   
-  // Circuits - MET UITGEBREIDE DEBUG
+  // *** FIX: Loop tot circuits_num in plaats van 16 ***
   Serial.println("\n--- SAVING CIRCUITS ---");
-  
-  for (int i = 0; i < 16; i++) {
-    String prefix = "circuit_";
-    
+  int save_count = request->arg("circuits_num").toInt();
+  if (save_count < 1) save_count = 1;
+  if (save_count > 16) save_count = 16;
+
+  for (int i = 0; i < save_count; i++) {
     // Name
-    String name_key = prefix + "name_" + String(i);
-    String name_val = request->arg(name_key.c_str());
+    String name_val = request->arg(("circuit_name_" + String(i)).c_str());
     if (name_val.length() == 0) name_val = "Circuit " + String(i + 1);
-    preferences.putString(name_key.c_str(), name_val);
+    preferences.putString(("c" + String(i) + "_name").c_str(), name_val);
     
     // IP
-    String ip_key = prefix + "ip_" + String(i);
-    String ip_val = request->arg(ip_key.c_str());
-    preferences.putString(ip_key.c_str(), ip_val);
+    String ip_val = request->arg(("circuit_ip_" + String(i)).c_str());
+    preferences.putString(("c" + String(i) + "_ip").c_str(), ip_val);
     
-    // mDNS
-    String mdns_key = prefix + "mdns_" + String(i);
-    String mdns_val = request->arg(mdns_key.c_str());
-    preferences.putString(mdns_key.c_str(), mdns_val);
+    // mDNS (STRIP .local als aanwezig)
+    String mdns_val = request->arg(("circuit_mdns_" + String(i)).c_str());
+    mdns_val.replace(".local", "");
+    mdns_val.trim();
+    preferences.putString(("c" + String(i) + "_mdns").c_str(), mdns_val);
     
     // Power
-    String power_key = prefix + "power_" + String(i);
-    String power_str = request->arg(power_key.c_str());
-    float power_val = power_str.toFloat();
-    preferences.putFloat(power_key.c_str(), power_val);
+    float power_val = request->arg(("circuit_power_" + String(i)).c_str()).toFloat();
+    preferences.putFloat(("c" + String(i) + "_power").c_str(), power_val);
     
     // Thermostaat checkbox
-    String tstat_key = prefix + "tstat_" + String(i);
-    bool has_tstat = request->hasArg(tstat_key.c_str());
-    preferences.putBool(tstat_key.c_str(), has_tstat);
+    bool has_tstat = request->hasArg(("circuit_tstat_" + String(i)).c_str());
+    preferences.putBool(("c" + String(i) + "_tstat").c_str(), has_tstat);
     
-    // Thermostaat pin - KRITISCH DEBUG
-    String pin_key = prefix + "tstat_pin_" + String(i);
-    bool has_pin_arg = request->hasArg(pin_key.c_str());
-    String pin_str = request->arg(pin_key.c_str());
-    int pin_val = pin_str.toInt();
+    // *** FIX: Pin waarde correct ophalen en opslaan ***
+    String pin_param = "circuit_tstat_pin_" + String(i);
+    int pin_val = 255;
     
-    // Validatie
-    if (pin_val != 10 && pin_val != 11 && pin_val != 12) {
-      pin_val = 255;
+    if (request->hasArg(pin_param.c_str())) {
+      String pin_str = request->arg(pin_param.c_str());
+      pin_val = pin_str.toInt();
+      // Alleen 10, 11, 12 zijn geldig, anders default naar 255
+      if (pin_val != 10 && pin_val != 11 && pin_val != 12) {
+        pin_val = 255;
+      }
     }
     
-    preferences.putInt(pin_key.c_str(), pin_val);
+    preferences.putInt(("c" + String(i) + "_pin").c_str(), pin_val);
     
-    // UITGEBREIDE DEBUG
-    Serial.printf("Circuit %d:\n", i);
-    Serial.printf("  name='%s'\n", name_val.c_str());
-    Serial.printf("  tstat=%d\n", has_tstat);
-    Serial.printf("  pin_key='%s' hasArg=%d raw='%s' parsed=%d saved=%d\n", 
-      pin_key.c_str(), has_pin_arg, pin_str.c_str(), pin_val, pin_val);
+    // DEBUG
+    Serial.printf("c%d: name='%s' ip='%s' mdns='%s' tstat=%d pin=%d\n", 
+      i, name_val.c_str(), ip_val.c_str(), mdns_val.c_str(), has_tstat, pin_val);
     
-    // Verificatie: direct teruglezen
-    int verify = preferences.getInt(pin_key.c_str(), -1);
-    Serial.printf("  VERIFY: read back from NVS = %d\n", verify);
+    // VERIFY
+    int verify_pin = preferences.getInt(("c" + String(i) + "_pin").c_str(), -1);
+    Serial.printf("  VERIFY pin: %d\n", verify_pin);
   }
-  
+
   Serial.println("--- CIRCUITS SAVED ---\n");
   
   request->send(200, "text/html", "<h2 style='text-align:center;color:#336699;'>Opgeslagen! Rebooting...</h2>");
-  delay(2000); // Langere delay zodat Serial output compleet is
+  delay(2000);
   ESP.restart();
 });
 
   server.begin();
 }
 
+void factoryResetNVS() {
+  Serial.println("\n=== FACTORY RESET NVS ===");
+  preferences.begin("hvac-config", false);
+  preferences.clear();
+  preferences.end();
+  
+  preferences.begin("room-config", false);
+  preferences.clear();
+  preferences.end();
+  
+  Serial.println("NVS gewist! Reboot...");
+  delay(1000);
+  ESP.restart();
+}
+
 
 // DEEL 4: Setup & Loop
-
 
 void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("\n=== HVAC Controller boot ===");
+
+  // FACTORY RESET optie via Serial
+  Serial.println("Type 'R' binnen 3 seconden voor NVS reset...");
+  unsigned long start = millis();
+  while (millis() - start < 3000) {
+    if (Serial.available() > 0) {
+      char c = Serial.read();
+      if (c == 'R' || c == 'r') {
+        factoryResetNVS();
+      }
+    }
+  }
 
   Wire.begin(I2C_SDA, I2C_SCL);
   
@@ -847,27 +931,22 @@ void setup() {
     Serial.println("MCP23017 gevonden!");
     mcp_available = true;
     
-    // Pins 0-6: Outputs (relays circuits)
     for (int i = 0; i < 7; i++) {
       mcp.pinMode(i, OUTPUT);
       mcp.digitalWrite(i, HIGH);
     }
     
-    // Pin 7: Input (pump feedback)
     mcp.pinMode(7, INPUT_PULLUP);
     
-    // Pins 8-9: Outputs (ECO pompen)
     mcp.pinMode(8, OUTPUT);
     mcp.digitalWrite(8, HIGH);
     mcp.pinMode(9, OUTPUT);
     mcp.digitalWrite(9, HIGH);
     
-    // Pins 10-12: Inputs (thermostaten)
     mcp.pinMode(10, INPUT_PULLUP);
     mcp.pinMode(11, INPUT_PULLUP);
     mcp.pinMode(12, INPUT_PULLUP);
     
-    // Pins 13-15: Reserve
     mcp.pinMode(13, INPUT_PULLUP);
     mcp.pinMode(14, INPUT_PULLUP);
     mcp.pinMode(15, INPUT_PULLUP);
@@ -878,7 +957,6 @@ void setup() {
 
   preferences.begin("hvac-config", false);
 
-  // Laad basis settings
   room_id = preferences.getString(NVS_ROOM_ID, "HVAC");
   wifi_ssid = preferences.getString(NVS_WIFI_SSID, "");
   wifi_pass = preferences.getString(NVS_WIFI_PASS, "");
@@ -889,7 +967,6 @@ void setup() {
   eco_hysteresis = preferences.getFloat(NVS_ECO_HYSTERESIS, 2.0);
   poll_interval = preferences.getInt(NVS_POLL_INTERVAL, 20);
 
-  // Laad sensor nicknames
   for (int i = 0; i < 6; i++) {
     sensor_nicknames[i] = preferences.getString(
       (String(NVS_SENSOR_NICK_BASE) + i).c_str(), 
@@ -897,23 +974,20 @@ void setup() {
     );
   }
 
-  // Laad circuit data
   for (int i = 0; i < 16; i++) {
-    String prefix = "circuit_";
-    circuits[i].name = preferences.getString((prefix + "name_" + i).c_str(), "Circuit " + String(i + 1));
-    circuits[i].ip = preferences.getString((prefix + "ip_" + i).c_str(), "");
-    circuits[i].mdns = preferences.getString((prefix + "mdns_" + i).c_str(), "");
-    circuits[i].power_kw = preferences.getFloat((prefix + "power_" + i).c_str(), 0.0);
-    circuits[i].has_tstat = preferences.getBool((prefix + "tstat_" + i).c_str(), false);
-    circuits[i].tstat_pin = preferences.getInt((prefix + "tstat_pin_" + i).c_str(), 255);
+    circuits[i].name = preferences.getString(("c" + String(i) + "_name").c_str(), "Circuit " + String(i + 1));
+    circuits[i].ip = preferences.getString(("c" + String(i) + "_ip").c_str(), "");
+    circuits[i].mdns = preferences.getString(("c" + String(i) + "_mdns").c_str(), "");
+    circuits[i].power_kw = preferences.getFloat(("c" + String(i) + "_power").c_str(), 0.0);
+    circuits[i].has_tstat = preferences.getBool(("c" + String(i) + "_tstat").c_str(), false);
+    circuits[i].tstat_pin = preferences.getInt(("c" + String(i) + "_pin").c_str(), 255);
     
-    // DEBUG OUTPUT TOEVOEGEN:
     if (i < circuits_num) {
-      Serial.printf("Loaded circuit %d: tstat=%d pin=%d from NVS\n", 
-        i, circuits[i].has_tstat, circuits[i].tstat_pin);
+      Serial.printf("Loaded c%d: '%s' ip='%s' mdns='%s' tstat=%d pin=%d\n", 
+        i, circuits[i].name.c_str(), circuits[i].ip.c_str(), 
+        circuits[i].mdns.c_str(), circuits[i].has_tstat, circuits[i].tstat_pin);
     }
-
-    // Runtime init
+    
     circuits[i].online = false;
     circuits[i].heating_on = false;
     circuits[i].vent_request = 0;
@@ -926,7 +1000,6 @@ void setup() {
 
   Serial.println("6 DS18B20 sensoren verwacht");
 
-  // WiFi setup
   WiFi.mode(WIFI_STA);
 
   if (static_ip_str.length() > 0 && static_ip.fromString(static_ip_str)) {
@@ -937,6 +1010,7 @@ void setup() {
   }
 
   if (wifi_ssid.length() > 0) {
+    Serial.printf("Connecting to WiFi '%s'...\n", wifi_ssid.c_str());
     WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
@@ -967,7 +1041,6 @@ void setup() {
   setupWebServer();
   Serial.println("Webserver gestart");
   
-  // Print circuit configuratie
   Serial.println("\n=== Circuit Configuratie ===");
   for (int i = 0; i < circuits_num; i++) {
     Serial.printf("Circuit %d: %s", i + 1, circuits[i].name.c_str());
@@ -995,4 +1068,3 @@ void loop() {
 
   delay(100);
 }
-
