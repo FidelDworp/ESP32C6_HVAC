@@ -1,7 +1,11 @@
 /* ESP32C6_HVACTEST.ino = Centrale HVAC controller voor kelder (ESP32-C6) op basis van particle sketch voor Flobecq
 Transition from Photon based to ESP32 based Home automation system. Developed together with ChatGPT & Grok in januari '26.
 Thuis bereikbaar op http://hvactest.local of http://192.168.1.36 => Andere controller: Naam (sectie DNS/MDNS) + static IP aanpassen!
-08jan26 10:00 Version 17: Wat nu werkt:
+08jan26 17:30 Version 20: Wat nog niet goed werkt: 
+1) Polling duurt lang na herstart, 
+2) Pagina past zich nu aan aan breedte venster.
+
+---------New features------------
 
 1. Circuit Struct Uitgebreid
 
@@ -48,7 +52,8 @@ override_active, override_state, override_remaining
 ------------------------
 
 To do DRINGEND:
-- Endpoint /status.json wordt niet meer bereikt! Werkte in vorige versie wel!
+- Endpoint /status.json wordt pas na vele pogingen bereikt! Werkte beter in vorige versie wel!
+  => Misschien wel te wijten aan ons wifi netwerk!
 
 To do Later:
 - HTTP polling stability kan nog verbeterd worden
@@ -320,8 +325,8 @@ void pollRooms() {
       }
 
       http.begin(client, url);
-      http.setTimeout(8000);
-      http.setConnectTimeout(3000);
+      http.setTimeout(4000);       // 4 sec i.p.v. 8 sec
+      http.setConnectTimeout(1500); // 1.5 sec i.p.v. 3 sec
       http.setReuse(false);
       
       int httpCode = http.GET();
@@ -553,13 +558,13 @@ String getMainPage() {
     .sidebar a {display:block;background:#336699;color:white;padding:8px;margin:8px 0;text-decoration:none;font-weight:bold;font-size:12px;border-radius:6px;text-align:center;line-height:1.3;width:60px;margin-left:auto;margin-right:auto;}
     .sidebar a:hover {background:#003366;}
     .sidebar a.active {background:#cc0000;}
-    .main {flex:1;padding:15px;overflow-y:auto;}
+    .main {flex:1;padding:15px;overflow-y:auto;max-width:100%;box-sizing:border-box;}
     .group-title {font-size:17px;font-style:italic;font-weight:bold;color:#336699;margin:20px 0 8px 0;}
     
     .refresh-btn {
       background:#336699;color:white;padding:10px 20px;border:none;
       border-radius:6px;cursor:pointer;font-size:14px;font-weight:bold;
-      margin:10px 0;
+      margin:10px 0;width:100%;max-width:300px;
     }
     .refresh-btn:hover {background:#003366;}
     
@@ -572,8 +577,11 @@ String getMainPage() {
       margin: 15px 0;
     }
     
-    table {width:100%;border-collapse:collapse;margin-bottom:15px;min-width:1400px;}
-    td.label {color:#336699;font-size:13px;padding:8px 5px;border-bottom:1px solid #ddd;text-align:left;vertical-align:middle;}
+    table {width:100%;border-collapse:collapse;margin-bottom:15px;}
+    table.info-table {min-width:auto;} /* Normale tabellen passen in venster */
+    table.circuits-table {min-width:1400px;} /* Circuits tabel scrollbaar */
+    
+    td.label {color:#336699;font-size:13px;padding:8px 5px;border-bottom:1px solid #ddd;text-align:left;vertical-align:middle;word-wrap:break-word;}
     td.value {background:#e6f0ff;font-size:13px;padding:8px 5px;border-bottom:1px solid #ddd;text-align:center;vertical-align:middle;white-space:nowrap;}
     tr.header-row {background:#336699;color:white;}
     tr.header-row td {color:white;background:#336699;font-weight:bold;padding:10px 5px;}
@@ -590,10 +598,15 @@ String getMainPage() {
     
     @media (max-width: 600px) {
       .container {flex-direction:column;}
-      .sidebar {width:100%;border-right:none;border-bottom:3px solid #cc0000;padding:10px 0;display:flex;justify-content:center;}
+      .sidebar {width:100%;border-right:none;border-bottom:3px solid #cc0000;padding:10px 0;display:flex;justify-content:center;flex-wrap:wrap;}
       .sidebar a {width:70px;margin:0 5px;}
       .main {padding:10px;}
-      .group-title {font-size:16px;margin:15px 0 6px 0;}
+      .header {font-size:16px;}
+      .header-right {font-size:12px;}
+      .group-title {font-size:15px;margin:15px 0 6px 0;}
+      td.label {font-size:11px;padding:6px 4px;width:40%;}
+      td.value {font-size:11px;padding:6px 4px;}
+      .refresh-btn {font-size:13px;padding:8px 16px;}
     }
   </style>
 </head>
@@ -613,7 +626,7 @@ String getMainPage() {
       <button class="refresh-btn" onclick="refreshData()">🔄 Refresh Data</button>
       
       <div class="group-title">CONTROLLER STATUS</div>
-      <table>
+      <table class="info-table">
         <tr><td class="label">MCP23017</td><td class="value">)rawliteral" + String(mcp_available ? "Verbonden" : "Niet gevonden") + R"rawliteral(</td></tr>
         <tr><td class="label">WiFi</td><td class="value">)rawliteral" + String(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "Niet verbonden") + R"rawliteral(</td></tr>
         <tr><td class="label">WiFi RSSI</td><td class="value">)rawliteral" + String(WiFi.RSSI()) + " dBm" + R"rawliteral(</td></tr>
@@ -621,7 +634,7 @@ String getMainPage() {
       </table>
 
       <div class="group-title">BOILER TEMPERATUREN</div>
-      <table>
+      <table class="info-table">
         <tr class="header-row"><td class="label">Sensor</td><td class="value">Temperatuur</td><td class="value">Status</td></tr>
 )rawliteral";
   
@@ -633,19 +646,19 @@ String getMainPage() {
   
   html += R"rawliteral(
       </table>
-      <table>
+      <table class="info-table">
         <tr><td class="label">SCH Qtot</td><td class="value">)rawliteral" + String(sch_qtot, 2) + " kWh" + R"rawliteral(</td></tr>
         <tr><td class="label">ECO Qtot</td><td class="value">)rawliteral" + String(eco_qtot, 2) + " kWh" + R"rawliteral(</td></tr>
       </table>
 
       <div class="group-title">VENTILATIE</div>
-      <table>
+      <table class="info-table">
         <tr><td class="label">Max request</td><td class="value">)rawliteral" + String(vent_percent) + " %" + R"rawliteral(</td></tr>
       </table>
       
       <div class="group-title">CIRCUITS</div>
       <div class="circuits-table-wrapper">
-      <table id="circuits-table">
+      <table class="circuits-table" id="circuits-table">
         <tr class="header-row">
           <td>#</td>
           <td>Naam</td>
