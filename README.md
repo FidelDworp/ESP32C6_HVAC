@@ -63,7 +63,8 @@ De controller pollt periodiek de kamercontrollers (/json endpoint) voor:
 ### Hardware
 
 - ESP32-C6 devboard
-- MCP23017 (adres 0x20) voor relays
+- MCP23017 (adres 0x20) voor relays + Thermostats
+  => 3 circuits met hardwired TSTAT: Pin 10 = Zitplaats, Pin 11 = Eetplaats, Pin 12 = Keuken.
 - OneWire bus op GPIO3 (12 DS18B20)
 - PWM ventilatie op GPIO20 → externe 0-10V converter
 - I2C op GPIO13 (SDA) / GPIO11 (SCL)
@@ -77,3 +78,61 @@ De controller pollt periodiek de kamercontrollers (/json endpoint) voor:
  
 FiDel
 Zarlardinge, België
+
+-------------------------------------------------------
+
+08jan26 10:00 Version 17: Wat nu werkt:
+
+1. Circuit Struct Uitgebreid
+
+Room controller data: setpoint, room_temp, heat_request, home_status
+Override systeem: override_active, override_state, override_start
+
+2. Intelligente Beslissings Logica (in pollRooms())
+Prioriteit volgorde:
+PRIO 0: Manual Override (1 uur) → FORCE ON/OFF
+PRIO 1: Hardwired TSTAT → Input
+PRIO 2: HTTP Poll → Parse aa, h, y, af, z
+PRIO 3: Beslissing:
+  - OFFLINE → TSTAT only
+  - ONLINE + HOME (af=1) → TSTAT OR HTTP
+  - ONLINE + AWAY (af=0) → HTTP only
+
+3. Complete Dashboard
+Nieuwe tabel met 14 kolommen:
+
+INPUT: #, Naam, IP, mDNS, Set, Temp, Heat, Home
+OUTPUT: TSTAT, Pomp, P, Duty, Vent
+CONTROL: Override (ON/OFF knoppen + countdown timer)
+
+Features:
+
+✅ Horizontaal scrollbaar op mobile
+✅ Override badge met live countdown (45:23)
+✅ Rode rand bij actieve override
+✅ ⚠️ waarschuwing in Pomp kolom
+✅ Kleurcodering: Groen (Thuis), Oranje (Away), Rood (NA/offline)
+
+4. Override Endpoints
+
+/circuit_override_on?circuit=N → Force ON
+/circuit_override_off?circuit=N → Force OFF
+/circuit_override_cancel?circuit=N → Annuleren
+
+5. JSON API Uitgebreid
+/json endpoint bevat nu ook:
+
+setpoint, room_temp, heat_request, home_status
+override_active, override_state, override_remaining
+
+------------------------
+
+To do DRINGEND:
+- Endpoint /status.json wordt niet meer bereikt! Werkte in vorige versie wel!
+
+To do Later:
+- HTTP polling stability kan nog verbeterd worden
+- mDNS werkt niet 100% betrouwbaar op ESP32-C6 (maar IP adressen werken prima)
+- Overweeg poll_interval te verhogen als er connection issues zijn
+*/
+
