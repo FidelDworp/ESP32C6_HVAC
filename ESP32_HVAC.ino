@@ -1,59 +1,11 @@
 /* ESP32C6_HVACTEST.ino = Centrale HVAC controller voor kelder (ESP32-C6) op basis van particle sketch voor Flobecq
 Transition from Photon based to ESP32 based Home automation system. Developed together with ChatGPT & Grok in januari '26.
 Thuis bereikbaar op http://hvactest.local of http://192.168.1.36 => Andere controller: Naam (sectie DNS/MDNS) + static IP aanpassen!
-08jan26 17:30 Version 20: Wat nog niet goed werkt: 
-1) Polling duurt lang na herstart, 
-2) Pagina past zich nu aan aan breedte venster.
-
----------New features------------
-
-1. Circuit Struct Uitgebreid
-
-Room controller data: setpoint, room_temp, heat_request, home_status
-Override systeem: override_active, override_state, override_start
-
-2. Intelligente Beslissings Logica (in pollRooms())
-Prioriteit volgorde:
-PRIO 0: Manual Override (1 uur) → FORCE ON/OFF
-PRIO 1: Hardwired TSTAT → Input
-PRIO 2: HTTP Poll → Parse aa, h, y, af, z
-PRIO 3: Beslissing:
-  - OFFLINE → TSTAT only
-  - ONLINE + HOME (af=1) → TSTAT OR HTTP
-  - ONLINE + AWAY (af=0) → HTTP only
-
-3. Complete Dashboard
-Nieuwe tabel met 14 kolommen:
-
-INPUT: #, Naam, IP, mDNS, Set, Temp, Heat, Home
-OUTPUT: TSTAT, Pomp, P, Duty, Vent
-CONTROL: Override (ON/OFF knoppen + countdown timer)
-
-Features:
-
-✅ Horizontaal scrollbaar op mobile
-✅ Override badge met live countdown (45:23)
-✅ Rode rand bij actieve override
-✅ ⚠️ waarschuwing in Pomp kolom
-✅ Kleurcodering: Groen (Thuis), Oranje (Away), Rood (NA/offline)
-
-4. Override Endpoints
-
-/circuit_override_on?circuit=N → Force ON
-/circuit_override_off?circuit=N → Force OFF
-/circuit_override_cancel?circuit=N → Annuleren
-
-5. JSON API Uitgebreid
-/json endpoint bevat nu ook:
-
-setpoint, room_temp, heat_request, home_status
-override_active, override_state, override_remaining
-
-------------------------
-
-To do DRINGEND:
-- Endpoint /status.json wordt pas na vele pogingen bereikt! Werkte beter in vorige versie wel!
-  => Misschien wel te wijten aan ons wifi netwerk!
+08jan26 21:20 Version 36: Wat nu wel goed werkt: 
+1) Polling duurt minder lang na herstart, 
+2) Override Power Display: Power (P) kolom toont nu ook het vermogen bij actieve override
+3) iPhone Tabel Optimalisatie: Op mobiel (<600px):
+4) Timer → 10 Minuten ✓
 
 To do Later:
 - HTTP polling stability kan nog verbeterd worden
@@ -141,7 +93,7 @@ Circuit circuits[16];
 String sensor_nicknames[6];
 float eco_threshold = 12.0;
 float eco_hysteresis = 2.0;
-int poll_interval = 20;
+int poll_interval = 10;
 
 #define RELAY_PUMP_SCH 8
 #define RELAY_PUMP_WON 9
@@ -250,7 +202,7 @@ void pollRooms() {
 
   vent_percent = 0;
   float total_power = 0.0;
-  const unsigned long OVERRIDE_TIMEOUT = 3600000UL; // 1 uur in ms
+  const unsigned long OVERRIDE_TIMEOUT = 600000UL; // 10 minuten in ms
 
   for (int i = 0; i < circuits_num; i++) {
     // Declareer alle variabelen bovenaan (voor goto)
@@ -275,7 +227,7 @@ void pollRooms() {
       } else {
         // Timeout bereikt
         circuits[i].override_active = false;
-        Serial.printf("c%d: Override timeout - terug naar AUTO\n", i);
+        Serial.printf("c%d: Override timeout (10 min) - terug naar AUTO\n", i);
       }
     }
     
@@ -442,7 +394,9 @@ void pollRooms() {
   }
   
   Serial.printf("Total power: %.2f kW, Vent: %d%%\n", total_power, vent_percent);
-  analogWrite(VENT_FAN_PIN, map(vent_percent, 0, 100, 0, 255));
+  int pwm_value = map(vent_percent, 0, 100, 0, 255);
+  analogWrite(VENT_FAN_PIN, pwm_value);
+  Serial.printf("Vent PWM: %d/255 (%d%%)\n", pwm_value, vent_percent);
   checkPumpFeedback(total_power);
 }
 
@@ -519,7 +473,7 @@ String getLogData() {
     if (circuits[i].override_active) {
       c["override_active"] = true;
       c["override_state"] = circuits[i].override_state;
-      unsigned long remaining = (3600000UL - (millis() - circuits[i].override_start)) / 1000;
+      unsigned long remaining = (600000UL - (millis() - circuits[i].override_start)) / 1000;  // 10 min
       c["override_remaining"] = remaining;
     } else {
       c["override_active"] = false;
@@ -584,7 +538,7 @@ String getMainPage() {
     td.label {color:#336699;font-size:13px;padding:8px 5px;border-bottom:1px solid #ddd;text-align:left;vertical-align:middle;word-wrap:break-word;}
     td.value {background:#e6f0ff;font-size:13px;padding:8px 5px;border-bottom:1px solid #ddd;text-align:center;vertical-align:middle;white-space:nowrap;}
     tr.header-row {background:#336699;color:white;}
-    tr.header-row td {color:white;background:#336699;font-weight:bold;padding:10px 5px;}
+    tr.header-row td {color:white;background:#336699;font-weight:bold;padding:10px 5px;font-size:12px;}
     tr.override-active {border-left:4px solid #cc0000;}
     .status-ok {color:#00aa00;font-weight:bold;}
     .status-na {color:#cc0000;font-weight:bold;}
@@ -599,14 +553,18 @@ String getMainPage() {
     @media (max-width: 600px) {
       .container {flex-direction:column;}
       .sidebar {width:100%;border-right:none;border-bottom:3px solid #cc0000;padding:10px 0;display:flex;justify-content:center;flex-wrap:wrap;}
-      .sidebar a {width:70px;margin:0 5px;}
-      .main {padding:10px;}
-      .header {font-size:16px;}
-      .header-right {font-size:12px;}
-      .group-title {font-size:15px;margin:15px 0 6px 0;}
-      td.label {font-size:11px;padding:6px 4px;width:40%;}
-      td.value {font-size:11px;padding:6px 4px;}
-      .refresh-btn {font-size:13px;padding:8px 16px;}
+      .sidebar a {width:60px;margin:0 3px;padding:6px;font-size:10px;}
+      .main {padding:8px;}
+      .header {font-size:14px;padding:8px 10px;}
+      .header-right {font-size:10px;}
+      .group-title {font-size:14px;margin:12px 0 5px 0;}
+      td.label {font-size:10px;padding:4px 2px;width:40%;}
+      td.value {font-size:10px;padding:4px 2px;}
+      tr.header-row td {font-size:9px;padding:5px 2px;}
+      .refresh-btn {font-size:12px;padding:6px 12px;}
+      table.circuits-table {min-width:850px;} /* Nog smaller op mobiel */
+      .btn-override {padding:2px 5px;font-size:9px;margin:1px;}
+      .override-badge {padding:2px 5px;font-size:9px;}
     }
   </style>
 </head>
@@ -679,7 +637,7 @@ String getMainPage() {
 
   for (int i = 0; i < circuits_num; i++) {
     String row_class = circuits[i].override_active ? " class=\"override-active\"" : "";
-    html += "<tr" + row_class + " data-circuit=\"" + String(i) + "\">";
+    html += "<tr" + row_class + " data-circuit=\"" + String(i) + "\" data-power=\"" + String(circuits[i].power_kw, 1) + "\">";
     
     html += "<td class=\"label\">" + String(i + 1) + "</td>";
     html += "<td class=\"value\">" + circuits[i].name + "</td>";
@@ -756,9 +714,9 @@ String getMainPage() {
     }
     html += "<td class=\"value pump-status\">" + pump + "</td>";
     
-    // Power
+    // Power - toon ook bij override!
     String power = circuits[i].heating_on ? String(circuits[i].power_kw, 1) + " kW" : "0 kW";
-    html += "<td class=\"value\">" + power + "</td>";
+    html += "<td class=\"value power-status\">" + power + "</td>";
     
     // Duty
     html += "<td class=\"value\">" + String(circuits[i].duty_cycle, 1) + "%</td>";
@@ -770,7 +728,7 @@ String getMainPage() {
     html += "<td class=\"value override-cell\">";
     if (circuits[i].override_active) {
       unsigned long elapsed = millis() - circuits[i].override_start;
-      unsigned long remaining = (3600000UL - elapsed) / 1000;
+      unsigned long remaining = (600000UL - elapsed) / 1000;  // 10 min
       if (remaining > 0) {
         String state_str = circuits[i].override_state ? "ON" : "OFF";
         html += "<span class=\"override-badge timer\" data-remaining=\"" + String(remaining) + "\">" + state_str + " " + String(remaining / 60) + ":" + String(remaining % 60) + "</span> ";
@@ -816,12 +774,21 @@ function setOverride(circuit, state) {
       if (response.ok) {
         // Direct visuele feedback
         const stateStr = state ? 'ON' : 'OFF';
-        cell.innerHTML = `<span class="override-badge timer" data-remaining="3600">${stateStr} 60:00</span> <button class="btn-override btn-override-cancel" onclick="cancelOverride(${circuit})">×</button>`;
+        cell.innerHTML = `<span class="override-badge timer" data-remaining="600">${stateStr} 10:00</span> <button class="btn-override btn-override-cancel" onclick="cancelOverride(${circuit})">×</button>`;
         row.classList.add('override-active');
         
         // Update pomp status direct
         const pumpCell = row.querySelector('.pump-status');
         pumpCell.innerHTML = state ? '⚠️ <b>AAN</b>' : '⚠️ UIT';
+        
+        // Update power status direct
+        const powerCell = row.querySelector('.power-status');
+        const powerKw = parseFloat(row.dataset.power || '0');
+        if (state && powerKw > 0) {
+          powerCell.textContent = powerKw.toFixed(1) + ' kW';
+        } else {
+          powerCell.textContent = '0 kW';
+        }
         
         // Start countdown timer
         startTimer();
@@ -847,9 +814,11 @@ function cancelOverride(circuit) {
         cell.innerHTML = `<button class="btn-override" onclick="setOverride(${circuit}, true)">ON</button> <button class="btn-override" onclick="setOverride(${circuit}, false)">OFF</button>`;
         row.classList.remove('override-active');
         
-        // Update pomp status
+        // Update pomp en power status
         const pumpCell = row.querySelector('.pump-status');
         pumpCell.innerHTML = 'UIT';
+        const powerCell = row.querySelector('.power-status');
+        powerCell.textContent = '0 kW';
         
         // Full refresh na 1 sec
         setTimeout(refreshData, 1000);
@@ -888,8 +857,7 @@ function refreshData() {
       document.getElementById('header-time').textContent = 
         data.timestamp + ' s   ' + now.toLocaleDateString('nl-BE') + ' ' + now.toLocaleTimeString('nl-BE');
       
-      // Update circuit data (vereenvoudigd - kan uitgebreid worden)
-      console.log('Data refreshed', data);
+      console.log('Data refreshed - vent_percent:', data.vent_percent);
     })
     .catch(err => console.error('Refresh error:', err));
 }
