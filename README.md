@@ -91,19 +91,22 @@ FiDel
 Zarlardinge, België
 
 -------------------------------------------------------
-GitHub repository bestanden: 
-
-ESP32C6 HVAC
+GitHub repository links: ESP32C6_HVAC => Deze kan Claude Sonnet niet lezen!
 
 Readme: https://github.com/FidelDworp/ESP32C6_HVAC/blob/main/README.md
-ESP32 sketch: https://github.com/FidelDworp/ESP32C6_HVAC/blob/main/ESP32_HVAC.ino
-Photon sketch: https://github.com/FidelDworp/ESP32C6_HVAC/blob/main/HVAC_Photon.cpp
-=> Deze kan Claude Sonnet niet lezen!
 
-Exacte URLs: kan hij wél lezen!
+ESP32 sketch: https://github.com/FidelDworp/ESP32C6_HVAC/blob/main/ESP32_HVAC.ino
+
+Photon sketch: https://github.com/FidelDworp/ESP32C6_HVAC/blob/main/HVAC_Photon.cpp
+
+MAAR: Exacte URLs: kan hij wél lezen!
+
 Readme: https://raw.githubusercontent.com/FidelDworp/ESP32C6_HVAC/main/README.md
+
 ESP32_HVAC.ino sketch: https://raw.githubusercontent.com/FidelDworp/ESP32C6_HVAC/main/ESP32_HVAC.ino
+
 HVAC_Photon.cpp sketch: https://raw.githubusercontent.com/FidelDworp/ESP32C6_HVAC/main/HVAC_Photon.cpp
+
 -------------------------------------------------------
 
 08jan26 10:00 Version 17: Wat nu werkt:
