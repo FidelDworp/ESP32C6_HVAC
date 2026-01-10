@@ -1,21 +1,47 @@
 /* ESP32C6_HVACTEST.ino = Centrale HVAC controller voor kelder (ESP32-C6) op basis van particle sketch voor Flobecq
 Transition from Photon based to ESP32 based Home automation system. Developed together with ChatGPT & Grok in januari '26.
 Thuis bereikbaar op http://hvactest.local of http://192.168.1.36 => Andere controller: Naam (sectie DNS/MDNS) + static IP aanpassen!
-09jan26 23:00 Version 51: Kritieke Bugfixes:
-✅ Room polling debug output hersteld
-✅ NTP sync gefixed
-✅ Sidebar spacing gefixed (brede pagina)
-✅ Settings page sidebar toegevoegd
-✅ Warning text compleet
+
+10jan26 08:30 Version V52: UI & JSON Improvements: "TRY1"
+10jan26 10:50 Version V52: UI & JSON Improvements: "TRY2"
+
+✅ Terminologie aangepast (SCH=Warmtepomp schuur, ECO=Solar+Haarden)
+✅ SCH pomp verplaatst naar ECO sectie
+✅ Beide pompen als toggles (zoals circuit relais)
+✅ 2px lijnen tussen alle secties
+✅ ECO data toegevoegd (EAv, EQtot, ET, EB)
+✅ Default boiler volume: 50L (was 100L)
+✅ JSON formaat zoals Particle (korte labels)
+✅ Laatste pompwerking in NVS + UI
+
+✅ Pompwerking wordt nu opgeslagen via savePumpEvent() (regel 24-28)
+✅ JSON formaat gebruikt nu korte Particle-stijl labels (KSTopH, KSTopL, KSAv, KSQtot, EAv, EQtot, ET, EB)
+✅ ECO boiler data (EAv, EQtot, ET, EB) toegevoegd aan JSON output (regels 352-355)
+
+✅ "SCH BOILER (Warmtepomp schuur)" - terminologie aangepast
+✅ "ECO BOILER (Solar + Haarden)" - terminologie aangepast
+✅ "Boiler sensors" header met blauwe achtergrond
+✅ "Energieinhoud (QTot)" label
+✅ SCH en WON pompen als toggles (zoals circuit relais)
+✅ 2px section dividers tussen alle secties
+
+✅ Pomp endpoints aangepast: Nu /pump_sch_on, /pump_sch_off, /pump_won_on, /pump_won_off (voor toggles in plaats van 1-minuut timers)
+✅ Settings page blijft hetzelfde (werkt prima!)
+✅ Alle override endpoints voor circuits
+✅ Factory reset functie
+
+✅ Load last pump events uit NVS (regels 78-81)
+✅ Print pump events bij startup (regels 88-93)
+✅ Default boiler volume 50L (regel 74)
+✅ Verbeterde startup messages met V52 features
+
 
 To do Later:
-- HTTP polling stability kan nog verbeterd worden
 - mDNS werkt niet 100% betrouwbaar op ESP32-C6 (maar IP adressen werken prima)
-- Overweeg poll_interval te verhogen als er connection issues zijn
 */
 
 
-// DEEL 1/5: HEADERS, STRUCTS & HELPER FUNCTIES
+// ============== DEEL 1/5: HEADERS, STRUCTS & HELPER FUNCTIES ==============
 
 #include <WiFi.h>
 #include <ESPmDNS.h>
@@ -58,6 +84,10 @@ const char* NVS_ECO_MDNS = "eco_mdns";
 const char* NVS_ECO_MIN_TEMP = "eco_min_temp";
 const char* NVS_BOILER_REF_TEMP = "boil_ref_t";
 const char* NVS_BOILER_VOLUME = "boil_vol";
+const char* NVS_LAST_SCH_PUMP = "last_sch_pump";
+const char* NVS_LAST_WON_PUMP = "last_won_pump";
+const char* NVS_LAST_SCH_KWH = "last_sch_kwh";
+const char* NVS_LAST_WON_KWH = "last_won_kwh";
 
 // Structs
 struct Circuit {
@@ -93,6 +123,11 @@ struct EcoBoilerData {
   unsigned long last_seen;
 };
 
+struct PumpEvent {
+  unsigned long timestamp;
+  float kwh_pumped;
+};
+
 // Global variables
 String room_id = "HVAC";
 String wifi_ssid = "";
@@ -109,7 +144,7 @@ String eco_controller_ip = "";
 String eco_controller_mdns = "eco";
 float eco_min_temp = 60.0;
 float boiler_ref_temp = 20.0;
-float boiler_layer_volume = 100.0;
+float boiler_layer_volume = 50.0;  // CHANGED: Was 100L, now 50L
 
 #define RELAY_PUMP_SCH 8
 #define RELAY_PUMP_WON 9
@@ -122,6 +157,10 @@ float sch_qtot = 0.0;
 float eco_qtot = 0.0;
 
 EcoBoilerData eco_boiler = {false, 0.0, 0.0, 0.0, 0.0, 0};
+
+// Last pump events
+PumpEvent last_sch_pump = {0, 0.0};
+PumpEvent last_won_pump = {0, 0.0};
 
 enum EcoPumpState { ECO_IDLE, ECO_PUMP_SCH, ECO_WAIT_SCH, ECO_PUMP_WON, ECO_WAIT_WON };
 EcoPumpState eco_pump_state = ECO_IDLE;
@@ -319,6 +358,27 @@ void pollEcoBoiler() {
   client.stop();
 }
 
+void savePumpEvent(const char* pump_type, float kwh) {
+  unsigned long timestamp = millis() / 1000;
+  
+  if (String(pump_type) == "SCH") {
+    last_sch_pump.timestamp = timestamp;
+    last_sch_pump.kwh_pumped = kwh;
+    preferences.putULong(NVS_LAST_SCH_PUMP, timestamp);
+    preferences.putFloat(NVS_LAST_SCH_KWH, kwh);
+    Serial.printf("Saved SCH pump event: %.2f kWh\n", kwh);
+  } else if (String(pump_type) == "WON") {
+    last_won_pump.timestamp = timestamp;
+    last_won_pump.kwh_pumped = kwh;
+    preferences.putULong(NVS_LAST_WON_PUMP, timestamp);
+    preferences.putFloat(NVS_LAST_WON_KWH, kwh);
+    Serial.printf("Saved WON pump event: %.2f kWh\n", kwh);
+  }
+}
+
+
+// ============== DEEL 2/5: ECO PUMPS & POLLING FUNCTIES ==============
+
 void handleEcoPumps() {
   if (!mcp_available) return;
   
@@ -338,6 +398,14 @@ void handleEcoPumps() {
   if (!can_pump || eco_boiler.qtot <= (eco_threshold - eco_hysteresis)) {
     if (eco_pump_state != ECO_IDLE) {
       Serial.println("ECO: Stopping auto pump cycle");
+      
+      float kwh_transferred = 0.5;
+      if (eco_pump_state == ECO_PUMP_SCH || eco_pump_state == ECO_WAIT_SCH) {
+        savePumpEvent("SCH", kwh_transferred);
+      } else if (eco_pump_state == ECO_PUMP_WON || eco_pump_state == ECO_WAIT_WON) {
+        savePumpEvent("WON", kwh_transferred);
+      }
+      
       eco_pump_state = ECO_IDLE;
       mcp.digitalWrite(RELAY_PUMP_SCH, HIGH);
       mcp.digitalWrite(RELAY_PUMP_WON, HIGH);
@@ -397,8 +465,6 @@ void handleEcoPumps() {
   }
 }
 
-// ============== DEEL 2/5: POLLING & JSON FUNCTIES ==============
-
 void pollRooms() {
   if (millis() - last_poll < (unsigned long)poll_interval * 1000) return;
   last_poll = millis();
@@ -427,7 +493,6 @@ void pollRooms() {
     bool http_demand = false;
     int home_status = 0;
     
-    // PRIORITEIT 0: MANUAL OVERRIDE
     if (circuits[i].override_active) {
       unsigned long elapsed = millis() - circuits[i].override_start;
       if (elapsed < OVERRIDE_TIMEOUT) {
@@ -443,14 +508,12 @@ void pollRooms() {
       }
     }
     
-    // PRIORITEIT 1: Thermostaat
     if (circuits[i].has_tstat && mcp_available && circuits[i].tstat_pin < 13) {
       bool tstat_on = (mcp.digitalRead(circuits[i].tstat_pin) == LOW);
       Serial.printf("c%d: TSTAT pin %d = %s\n", i, circuits[i].tstat_pin, tstat_on ? "ON" : "OFF");
       tstat_demand = tstat_on;
     }
     
-    // PRIORITEIT 2: HTTP Poll
     if (circuits[i].ip.length() > 0 || circuits[i].mdns.length() > 0) {
       WiFiClient client;
       HTTPClient http;
@@ -606,13 +669,34 @@ String getWifiScanJson() {
 String getLogData() {
   DynamicJsonDocument doc(4096);
   doc["timestamp"] = millis() / 1000;
-  doc["eco_qtot"] = eco_qtot;
-  doc["sch_qtot"] = sch_qtot;
+  
+  doc["KSTopH"] = sch_temps[0];
+  doc["KSTopL"] = sch_temps[1];
+  doc["KSMidH"] = sch_temps[2];
+  doc["KSMidL"] = sch_temps[3];
+  doc["KSBotH"] = sch_temps[4];
+  doc["KSBotL"] = sch_temps[5];
+  
+  float KSAv = 0;
+  int valid_count = 0;
+  for (int i = 0; i < 6; i++) {
+    if (sensor_ok[i] && sch_temps[i] > -100) {
+      KSAv += sch_temps[i];
+      valid_count++;
+    }
+  }
+  if (valid_count > 0) KSAv /= valid_count;
+  
+  doc["KSAv"] = KSAv;
+  doc["KSQtot"] = sch_qtot;
+  
+  doc["EAv"] = eco_boiler.temp_avg;
+  doc["EQtot"] = eco_boiler.qtot;
+  doc["ET"] = eco_boiler.temp_top;
+  doc["EB"] = eco_boiler.temp_bottom;
+  
   doc["vent_percent"] = vent_percent;
   doc["eco_online"] = eco_boiler.online;
-  doc["eco_temp_avg"] = eco_boiler.temp_avg;
-  doc["eco_temp_top"] = eco_boiler.temp_top;
-  doc["eco_temp_bottom"] = eco_boiler.temp_bottom;
   doc["sch_pump_manual"] = sch_pump_manual;
   doc["won_pump_manual"] = won_pump_manual;
   
@@ -621,14 +705,6 @@ String getLogData() {
   }
   if (won_pump_manual) {
     doc["won_pump_remaining"] = (MANUAL_PUMP_DURATION - (millis() - won_pump_manual_start)) / 1000;
-  }
-  
-  JsonArray temps = doc.createNestedArray("temperatures");
-  for (int i = 0; i < 6; i++) {
-    JsonObject t = temps.createNestedObject();
-    t["name"] = sensor_nicknames[i];
-    t["temp"] = sch_temps[i];
-    t["ok"] = sensor_ok[i];
   }
   
   JsonArray circs = doc.createNestedArray("circuits");
@@ -664,7 +740,6 @@ String getLogData() {
 
 // ============== DEEL 3/5: MAIN PAGE UI ==============
 
-
 String getMainPage() {
   float total_power = 0.0;
   for (int i = 0; i < circuits_num; i++) {
@@ -672,7 +747,7 @@ String getMainPage() {
   }
   
   String html;
-  html.reserve(30000);
+  html.reserve(35000);
   html = R"rawliteral(
 <!DOCTYPE html>
 <html lang="nl">
@@ -691,23 +766,30 @@ String getMainPage() {
     .sidebar a:hover {background:#036;}
     .sidebar a.active {background:#c00;}
     .main {flex:1;padding:15px;overflow-y:auto;}
-    .group-title {font-size:17px;font-style:italic;font-weight:bold;color:#369;margin:20px 0 8px 0;}
-    .group-title.eco {color:#0a0;}
+    .group-title {font-size:17px;font-style:italic;font-weight:bold;color:#fff;background:#336699;padding:8px 12px;margin:20px 0 8px 0;border-radius:4px;}
+    .group-title.eco {background:#0a0;}
+    .section-divider {border-top:2px solid #ccc;margin:15px 0;}
+    .blue-divider {border-top:3px solid #336699;margin:25px 0;}
     .refresh-btn {background:#369;color:#fff;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:bold;margin:10px 0;width:100%;max-width:300px;}
     .refresh-btn:hover {background:#036;}
     table {width:100%;border-collapse:collapse;margin-bottom:15px;}
     td.label {color:#369;font-size:13px;padding:8px 5px;border-bottom:1px solid #ddd;text-align:left;}
     td.value {background:#e6f0ff;font-size:13px;padding:8px 5px;border-bottom:1px solid #ddd;text-align:center;}
-    tr.header-row {background:#369;color:#fff;}
+    tr.header-row {background:#336699;color:#fff;}
     tr.header-row td {color:#fff;font-weight:bold;padding:10px 5px;font-size:12px;}
     .status-ok {color:#0a0;font-weight:bold;}
     .status-na {color:#c00;font-weight:bold;}
     .status-away {color:#f80;font-weight:bold;}
-    .btn-pump {padding:6px 12px;margin:2px;font-size:12px;cursor:pointer;border:none;border-radius:4px;background:#369;color:#fff;min-width:120px;}
-    .btn-pump:hover {background:#036;}
-    .btn-pump:disabled {background:#ccc;cursor:not-allowed;}
-    .pump-timer {color:#c00;font-weight:bold;font-size:12px;margin-left:8px;}
-    .blue-divider {border-top:3px solid #369;margin:25px 0;}
+    .toggle-container {display:flex;align-items:center;justify-content:center;gap:10px;}
+    .toggle-switch {position:relative;display:inline-block;width:50px;height:24px;}
+    .toggle-switch input {opacity:0;width:0;height:0;}
+    .toggle-slider {position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background-color:#ccc;transition:.3s;border-radius:24px;}
+    .toggle-slider:before {position:absolute;content:"";height:18px;width:18px;left:3px;bottom:3px;background-color:#fff;transition:.3s;border-radius:50%;}
+    input:checked + .toggle-slider {background-color:#0a0;}
+    input:checked + .toggle-slider:before {transform:translateX(26px);}
+    input:disabled + .toggle-slider {background-color:#ddd;cursor:not-allowed;}
+    .toggle-label {font-size:12px;color:#369;font-weight:bold;min-width:60px;}
+    .pump-info {font-size:11px;color:#666;font-style:italic;margin-top:5px;}
     .eco-status-badge {display:inline-block;padding:4px 12px;border-radius:4px;font-weight:bold;font-size:12px;margin-left:10px;}
     .eco-online {background:#0a0;color:#fff;}
     .eco-offline {background:#c00;color:#fff;}
@@ -751,9 +833,11 @@ String getMainPage() {
         <tr><td class="label">Free heap</td><td class="value">)rawliteral" + String((ESP.getFreeHeap() * 100) / ESP.getHeapSize()) + " %" + R"rawliteral(</td></tr>
       </table>
 
-      <div class="group-title">SCH BOILER (Zonne-boiler)</div>
+      <div class="section-divider"></div>
+
+      <div class="group-title">SCH BOILER (Warmtepomp schuur)</div>
       <table>
-        <tr class="header-row"><td class="label">Sensor</td><td class="value">Temperatuur</td><td class="value">Status</td></tr>
+        <tr class="header-row"><td class="label">Boiler sensors</td><td class="value">Temperatuur</td><td class="value">Status</td></tr>
 )rawliteral";
   
   for (int i = 0; i < 6; i++) {
@@ -762,35 +846,20 @@ String getMainPage() {
     html += "<tr><td class=\"label\">" + sensor_nicknames[i] + "</td><td class=\"value\">" + temp_str + "</td><td class=\"value\">" + status + "</td></tr>";
   }
   
-  unsigned long sch_remaining = 0;
-  if (sch_pump_manual && (millis() - sch_pump_manual_start < MANUAL_PUMP_DURATION)) {
-    sch_remaining = (MANUAL_PUMP_DURATION - (millis() - sch_pump_manual_start)) / 1000;
-  }
-  
   html += R"rawliteral(
       </table>
       <table>
         <tr>
-          <td class="label">SCH Qtot</td>
+          <td class="label">Energieinhoud (QTot)</td>
           <td class="value"><b>)rawliteral";
   html += String(sch_qtot, 2) + " kWh";
   html += R"rawliteral(</b></td>
-          <td class="value">
-            <button class="btn-pump" id="sch_pump_btn" onclick="pumpManual('sch')" )rawliteral";
-  html += (sch_pump_manual ? "disabled" : "");
-  html += R"rawliteral(>)rawliteral";
-  html += (sch_pump_manual ? "SCH AAN" : "SCH Pomp (1 min)");
-  html += R"rawliteral(</button>
-            <span class="pump-timer" id="sch_timer">)rawliteral";
-  html += (sch_remaining > 0 ? "(" + String(sch_remaining) + "s)" : "");
-  html += R"rawliteral(</span>
-          </td>
         </tr>
       </table>
 
       <div class="blue-divider"></div>
 
-      <div class="group-title eco">ECO BOILER (Warmtepomp)
+      <div class="group-title eco">ECO BOILER (Solar + Haarden)
         <span class="eco-status-badge )rawliteral";
   html += (eco_boiler.online ? "eco-online" : "eco-offline");
   html += R"rawliteral(">)rawliteral";
@@ -836,31 +905,73 @@ String getMainPage() {
 )rawliteral";
   }
   
-  unsigned long won_remaining = 0;
-  if (won_pump_manual && (millis() - won_pump_manual_start < MANUAL_PUMP_DURATION)) {
-    won_remaining = (MANUAL_PUMP_DURATION - (millis() - won_pump_manual_start)) / 1000;
+  html += R"rawliteral(
+        <tr>
+          <td class="label">SCH Pomp</td>
+          <td class="value">
+            <div class="toggle-container">
+              <span class="toggle-label">SCH</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="sch_pump_toggle" onchange="togglePump('sch', this.checked)" )rawliteral";
+  html += (sch_pump_manual ? "checked" : "");
+  html += R"rawliteral(>
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+)rawliteral";
+  
+  if (last_sch_pump.timestamp > 0) {
+    time_t event_time = last_sch_pump.timestamp;
+    struct tm tm;
+    localtime_r(&event_time, &tm);
+    char time_buf[32];
+    strftime(time_buf, sizeof(time_buf), "%d-%m-%Y %H:%M", &tm);
+    html += "            <div class=\"pump-info\">Laatste automatische pompwerking:<br>" + String(time_buf) + " - " + String(last_sch_pump.kwh_pumped, 2) + " kWh</div>";
+  } else {
+    html += "            <div class=\"pump-info\">Laatste automatische pompwerking: NA</div>";
   }
   
   html += R"rawliteral(
+          </td>
+        </tr>
         <tr>
           <td class="label">WON Pomp</td>
           <td class="value">
-            <button class="btn-pump" id="won_pump_btn" onclick="pumpManual('won')" )rawliteral";
-  html += (won_pump_manual ? "disabled" : "");
-  html += R"rawliteral(>)rawliteral";
-  html += (won_pump_manual ? "WON AAN" : "WON Pomp (1 min)");
-  html += R"rawliteral(</button>
-            <span class="pump-timer" id="won_timer">)rawliteral";
-  html += (won_remaining > 0 ? "(" + String(won_remaining) + "s)" : "");
-  html += R"rawliteral(</span>
+            <div class="toggle-container">
+              <span class="toggle-label">WON</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="won_pump_toggle" onchange="togglePump('won', this.checked)" )rawliteral";
+  html += (won_pump_manual ? "checked" : "");
+  html += R"rawliteral(>
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+)rawliteral";
+  
+  if (last_won_pump.timestamp > 0) {
+    time_t event_time = last_won_pump.timestamp;
+    struct tm tm;
+    localtime_r(&event_time, &tm);
+    char time_buf[32];
+    strftime(time_buf, sizeof(time_buf), "%d-%m-%Y %H:%M", &tm);
+    html += "            <div class=\"pump-info\">Laatste automatische pompwerking:<br>" + String(time_buf) + " - " + String(last_won_pump.kwh_pumped, 2) + " kWh</div>";
+  } else {
+    html += "            <div class=\"pump-info\">Laatste automatische pompwerking: NA</div>";
+  }
+  
+  html += R"rawliteral(
           </td>
         </tr>
       </table>
+
+      <div class="section-divider"></div>
 
       <div class="group-title">VENTILATIE</div>
       <table>
         <tr><td class="label">Max request</td><td class="value">)rawliteral" + String(vent_percent) + " %" + R"rawliteral(</td></tr>
       </table>
+
+      <div class="section-divider"></div>
       
       <div class="group-title">CIRCUITS</div>
       <div class="circuits-table-wrapper">
@@ -935,31 +1046,14 @@ String getMainPage() {
   </div>
 
 <script>
-function pumpManual(type) {
-  const endpoint = type === 'sch' ? '/pump_sch_manual' : '/pump_won_manual';
+function togglePump(type, state) {
+  const endpoint = state ? (type === 'sch' ? '/pump_sch_on' : '/pump_won_on') 
+                         : (type === 'sch' ? '/pump_sch_off' : '/pump_won_off');
   fetch(endpoint).then(response => {
-    if (response.ok) startPumpTimer(type, 60);
-  });
-}
-
-function startPumpTimer(type, duration) {
-  const btn = document.getElementById(type + '_pump_btn');
-  const timer = document.getElementById(type + '_timer');
-  btn.disabled = true;
-  btn.textContent = type.toUpperCase() + ' AAN';
-  let remaining = duration;
-  timer.textContent = '(' + remaining + 's)';
-  const interval = setInterval(() => {
-    remaining--;
-    if (remaining > 0) {
-      timer.textContent = '(' + remaining + 's)';
-    } else {
-      clearInterval(interval);
-      btn.disabled = false;
-      btn.textContent = type.toUpperCase() + ' Pomp (1 min)';
-      timer.textContent = '';
+    if (!response.ok) {
+      document.getElementById(type + '_pump_toggle').checked = !state;
     }
-  }, 1000);
+  });
 }
 
 function setOverride(circuit, state) {
@@ -998,10 +1092,7 @@ function refreshData() {
 }
 
 
-
 // ============== DEEL 4/5: SETTINGS PAGE & ENDPOINTS ==============
-
-
 
 void setupWebServer() {
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -1062,7 +1153,6 @@ h1{color:#369;}
     ESP.restart();
   });
 
-  // SETTINGS PAGE
   server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request){
     String sensorNamesHtml = "";
     for (int i = 0; i < 6; i++) {
@@ -1180,7 +1270,6 @@ input,select{padding:8px;border:1px solid #ccc;border-radius:4px;}
     request->send(200, "text/html; charset=utf-8", html);
   });
 
-  // SAVE SETTINGS
   server.on("/save_settings", HTTP_GET, [](AsyncWebServerRequest *request){
     Serial.println("\n=== SAVE SETTINGS ===");
     
@@ -1239,7 +1328,6 @@ input,select{padding:8px;border:1px solid #ccc;border-radius:4px;}
     ESP.restart();
   });
 
-  // OVERRIDE ENDPOINTS
   server.on("/circuit_override_on", HTTP_GET, [](AsyncWebServerRequest *request) {
     if (request->hasArg("circuit")) {
       int idx = request->arg("circuit").toInt();
@@ -1274,25 +1362,31 @@ input,select{padding:8px;border:1px solid #ccc;border-radius:4px;}
     request->send(200, "text/plain", "OK");
   });
 
-  // ECO PUMP MANUAL
-  server.on("/pump_sch_manual", HTTP_GET, [](AsyncWebServerRequest *request) {
+  server.on("/pump_sch_on", HTTP_GET, [](AsyncWebServerRequest *request) {
     sch_pump_manual = true;
     sch_pump_manual_start = millis();
-    Serial.println("ECO: SCH pump manual (1 min)");
+    Serial.println("ECO: SCH pump ON (toggle)");
     request->send(200, "text/plain", "OK");
   });
 
-  server.on("/pump_won_manual", HTTP_GET, [](AsyncWebServerRequest *request) {
+  server.on("/pump_sch_off", HTTP_GET, [](AsyncWebServerRequest *request) {
+    sch_pump_manual = false;
+    if (mcp_available) mcp.digitalWrite(RELAY_PUMP_SCH, HIGH);
+    Serial.println("ECO: SCH pump OFF (toggle)");
+    request->send(200, "text/plain", "OK");
+  });
+
+  server.on("/pump_won_on", HTTP_GET, [](AsyncWebServerRequest *request) {
     won_pump_manual = true;
     won_pump_manual_start = millis();
-    Serial.println("ECO: WON pump manual (1 min)");
+    Serial.println("ECO: WON pump ON (toggle)");
     request->send(200, "text/plain", "OK");
   });
 
-  server.on("/pump_cancel", HTTP_GET, [](AsyncWebServerRequest *request) {
-    sch_pump_manual = false;
+  server.on("/pump_won_off", HTTP_GET, [](AsyncWebServerRequest *request) {
     won_pump_manual = false;
-    Serial.println("ECO: All manual pumps cancelled");
+    if (mcp_available) mcp.digitalWrite(RELAY_PUMP_WON, HIGH);
+    Serial.println("ECO: WON pump OFF (toggle)");
     request->send(200, "text/plain", "OK");
   });
 
@@ -1310,21 +1404,22 @@ void factoryResetNVS() {
 }
 
 
-
 // ============== DEEL 5/5: SETUP & LOOP ==============
-
 
 
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("\n\n=== HVAC Controller V51 CLEAN ===");
-  Serial.println("BUGFIXES:");
-  Serial.println("- Room polling debug output hersteld");
-  Serial.println("- NTP sync verbeterd");
-  Serial.println("- Sidebar spacing gefixed");
-  Serial.println("- Settings page sidebar toegevoegd");
-  Serial.println("- Warning text compleet");
+  Serial.println("\n\n=== HVAC Controller V52 ===");
+  Serial.println("IMPROVEMENTS:");
+  Serial.println("- Terminologie aangepast (SCH=Warmtepomp schuur, ECO=Solar+Haarden)");
+  Serial.println("- SCH pomp verplaatst naar ECO sectie");
+  Serial.println("- Beide pompen als toggles (zoals circuit relais)");
+  Serial.println("- 2px lijnen tussen alle secties");
+  Serial.println("- ECO data toegevoegd (EAv, EQtot, ET, EB)");
+  Serial.println("- Default boiler volume: 50L (was 100L)");
+  Serial.println("- JSON formaat zoals Particle (korte labels)");
+  Serial.println("- Laatste pompwerking in NVS + UI");
 
   // Factory reset optie
   Serial.println("\nType 'R' binnen 3 sec voor NVS reset...");
@@ -1379,11 +1474,24 @@ void setup() {
   eco_controller_mdns = preferences.getString(NVS_ECO_MDNS, "eco");
   eco_min_temp = preferences.getFloat(NVS_ECO_MIN_TEMP, 60.0);
   boiler_ref_temp = preferences.getFloat(NVS_BOILER_REF_TEMP, 20.0);
-  boiler_layer_volume = preferences.getFloat(NVS_BOILER_VOLUME, 100.0);
+  boiler_layer_volume = preferences.getFloat(NVS_BOILER_VOLUME, 50.0);
+  
+  // Load last pump events
+  last_sch_pump.timestamp = preferences.getULong(NVS_LAST_SCH_PUMP, 0);
+  last_sch_pump.kwh_pumped = preferences.getFloat(NVS_LAST_SCH_KWH, 0.0);
+  last_won_pump.timestamp = preferences.getULong(NVS_LAST_WON_PUMP, 0);
+  last_won_pump.kwh_pumped = preferences.getFloat(NVS_LAST_WON_KWH, 0.0);
   
   Serial.printf("\nBoiler Qtot settings:\n");
   Serial.printf("  Reference temp: %.1f °C\n", boiler_ref_temp);
   Serial.printf("  Volume per laag: %.0f L\n", boiler_layer_volume);
+  
+  if (last_sch_pump.timestamp > 0) {
+    Serial.printf("\nLast SCH pump event: %.2f kWh\n", last_sch_pump.kwh_pumped);
+  }
+  if (last_won_pump.timestamp > 0) {
+    Serial.printf("Last WON pump event: %.2f kWh\n", last_won_pump.kwh_pumped);
+  }
 
   for (int i = 0; i < 6; i++) {
     sensor_nicknames[i] = preferences.getString(
@@ -1450,13 +1558,12 @@ void setup() {
     Serial.println("\nWiFi connected: " + WiFi.localIP().toString());
     Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
     
-    // NTP SYNC - BUGFIX: Meer tijd, betere logging
+    // NTP SYNC
     Serial.println("\nSyncing NTP time...");
     configTime(3600, 3600, "pool.ntp.org", "time.nist.gov");
     setenv("TZ", "CET-1CEST,M3.5.0/02,M10.5.0/03", 1);
     tzset();
     
-    // Wacht tot tijd gesynchroniseerd is (max 10 sec)
     int retry = 0;
     time_t now = 0;
     struct tm timeinfo;
@@ -1472,7 +1579,7 @@ void setup() {
       Serial.println(" OK!");
       Serial.println("Time: " + getFormattedDateTime());
     } else {
-      Serial.println(" TIMEOUT (gebruik hotspot?)");
+      Serial.println(" TIMEOUT");
       Serial.println("Tijd wordt niet getoond tot NTP sync lukt");
     }
   }
