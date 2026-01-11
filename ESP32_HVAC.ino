@@ -4,25 +4,18 @@ Thuis bereikbaar op http://hvactest.local of http://192.168.1.36 => Andere contr
 
 10jan26 08:30 Version V52: UI & JSON Improvements: "TRY1"
 10jan26 10:50 Version V52: UI & JSON Improvements: "TRY2"
-11jan26 12:00 Version V53: JSON formaat EXACT zoals Particle Photon
-11jan26 18:00 Version V53.1: ECO logica + UI fixes
+10jan26 12:00 Version V53: JSON formaat EXACT zoals Particle Photon
+11jan26 09:00 Version V53.1: ECO logica + UI fixes
+11jan26 11:30 Version V53.2: Circuit-style pump buttons + captive portal
 
-WIJZIGINGEN V53.1 t.o.v. V53:
-
-1.  ECO UI: ETop (hoogste temp) tonen ipv EAv (gemiddelde)
-2.  ECO UI: Alle 4 velden altijd tonen (NA als offline)
-3.  ECO UI: "OFFLINE" uit blauwe balk verwijderen
-4.  Pomp controls: ON/OFF buttons (niet toggles)
-5.  Pomp logica: START = temp_top > max OR qtot > threshold
-6.  Pomp logica: STOP = temp_top < min OR qtot < (threshold-hyst)
-7.  Pomp flow: 30 min pompen -> 30 min wacht -> wissel
-8.  Pomp tracking: Totalen per boiler (cumulatief in NVS)
-9.  Pomp UI: Laatste event + TOTAAL tonen
-10. WiFi: timeout 10s -> 20s (iPhone hotspot)
+V53.2 PATCH PLAN:
+FIX 1: Pomp controls = circuit override style (60s timer + cancel)
+FIX 2: Betere Serial debug output
+FIX 3: Labels: "Tmax pomp (Start)" / "Tmin pomp (Stop)"
+FIX 4: Captive portal (auto-open settings) = Na AP opstart moet config pagina automatisch openen: http://192.168.4.1/settings
 
 To do Later:
 - mDNS werkt niet 100% betrouwbaar op ESP32-C6 (maar IP adressen werken prima)
-- Captive Portal: Na AP opstart moet config pagina automatisch openen: http://192.168.4.1/settings
 */
 
 
@@ -377,29 +370,44 @@ void savePumpEvent(const char* pump_type, float kwh) {
   }
 }
 
+
+
+
+
+
 // ============== DEEL 2/5: ECO PUMPS & POLLING FUNCTIES ==============
 
-// V53.1: VOLLEDIG HERSCHREVEN handleEcoPumps()
+// V53.2: NIEUWE handleEcoPumps() met 60s manual timer (zoals circuit override!)
 void handleEcoPumps() {
   if (!mcp_available) return;
   
-  // Manual mode heeft prioriteit
+  // V53.2: Manual mode zoals circuit override (60 seconden!)
   bool sch_manual_active = sch_pump_manual && (millis() - sch_pump_manual_start < MANUAL_PUMP_DURATION);
   bool won_manual_active = won_pump_manual && (millis() - won_pump_manual_start < MANUAL_PUMP_DURATION);
+  
+  // Check timeouts
+  if (sch_pump_manual && !sch_manual_active) {
+    Serial.println("\n=== MANUAL PUMP TIMEOUT ===");
+    Serial.println("SCH pump manual mode expired (60s)");
+    sch_pump_manual = false;
+  }
+  if (won_pump_manual && !won_manual_active) {
+    Serial.println("\n=== MANUAL PUMP TIMEOUT ===");
+    Serial.println("WON pump manual mode expired (60s)");
+    won_pump_manual = false;
+  }
   
   if (sch_manual_active || won_manual_active) {
     mcp.digitalWrite(RELAY_PUMP_SCH, sch_manual_active ? LOW : HIGH);
     mcp.digitalWrite(RELAY_PUMP_WON, won_manual_active ? LOW : HIGH);
-    if (millis() - sch_pump_manual_start >= MANUAL_PUMP_DURATION) sch_pump_manual = false;
-    if (millis() - won_pump_manual_start >= MANUAL_PUMP_DURATION) won_pump_manual = false;
     return;
   }
   
-  // V53.1: NIEUWE START conditie (OR logica)
+  // V53.1: START conditie (OR logica)
   bool should_start = eco_boiler.online 
                    && ((eco_boiler.temp_top > eco_max_temp) || (eco_boiler.qtot > eco_threshold));
   
-  // V53.1: NIEUWE STOP conditie (OR logica)
+  // V53.1: STOP conditie (OR logica)
   bool should_stop = !eco_boiler.online
                   || ((eco_boiler.temp_top < eco_min_temp) || (eco_boiler.qtot < (eco_threshold - eco_hysteresis)));
   
@@ -412,13 +420,19 @@ void handleEcoPumps() {
       
       // Check of we moeten starten
       if (should_start) {
-        // V53.1: Wissel tussen WON en SCH
+        // Wissel tussen WON en SCH
         if (last_pump_was_sch) {
           eco_pump_state = ECO_PUMP_WON;
-          Serial.println("ECO: Starting WON pump (30 min)");
+          Serial.println("\n=== AUTO PUMP START ===");
+          Serial.println("Pump: WON");
+          Serial.println("Duration: 30 minutes");
+          Serial.println("Reason: temp_top > Tmax OR qtot > threshold");
         } else {
           eco_pump_state = ECO_PUMP_SCH;
-          Serial.println("ECO: Starting SCH pump (30 min)");
+          Serial.println("\n=== AUTO PUMP START ===");
+          Serial.println("Pump: SCH");
+          Serial.println("Duration: 30 minutes");
+          Serial.println("Reason: temp_top > Tmax OR qtot > threshold");
         }
         eco_pump_timer = millis();
       }
@@ -431,7 +445,9 @@ void handleEcoPumps() {
       
       // Check stop conditie
       if (should_stop) {
-        Serial.println("ECO: Stopping SCH pump (conditie bereikt)");
+        Serial.println("\n=== AUTO PUMP STOP ===");
+        Serial.println("Pump: SCH");
+        Serial.println("Reason: temp_top < Tmin OR qtot < (threshold-hyst)");
         eco_pump_state = ECO_IDLE;
         mcp.digitalWrite(RELAY_PUMP_SCH, HIGH);
         
@@ -444,7 +460,9 @@ void handleEcoPumps() {
       
       // Check timeout (30 min)
       if (millis() - eco_pump_timer >= ECO_PUMP_DURATION) {
-        Serial.println("ECO: SCH pump finished (30 min)");
+        Serial.println("\n=== AUTO PUMP FINISHED ===");
+        Serial.println("Pump: SCH");
+        Serial.println("Duration: 30 minutes completed");
         mcp.digitalWrite(RELAY_PUMP_SCH, HIGH);
         
         // Save event
@@ -455,6 +473,7 @@ void handleEcoPumps() {
         // Ga naar wacht-fase
         eco_pump_state = ECO_WAIT;
         eco_pump_timer = millis();
+        Serial.println("Entering wait phase: 30 minutes");
       }
       break;
       
@@ -465,7 +484,9 @@ void handleEcoPumps() {
       
       // Check stop conditie
       if (should_stop) {
-        Serial.println("ECO: Stopping WON pump (conditie bereikt)");
+        Serial.println("\n=== AUTO PUMP STOP ===");
+        Serial.println("Pump: WON");
+        Serial.println("Reason: temp_top < Tmin OR qtot < (threshold-hyst)");
         eco_pump_state = ECO_IDLE;
         mcp.digitalWrite(RELAY_PUMP_WON, HIGH);
         
@@ -478,7 +499,9 @@ void handleEcoPumps() {
       
       // Check timeout (30 min)
       if (millis() - eco_pump_timer >= ECO_PUMP_DURATION) {
-        Serial.println("ECO: WON pump finished (30 min)");
+        Serial.println("\n=== AUTO PUMP FINISHED ===");
+        Serial.println("Pump: WON");
+        Serial.println("Duration: 30 minutes completed");
         mcp.digitalWrite(RELAY_PUMP_WON, HIGH);
         
         // Save event
@@ -489,6 +512,7 @@ void handleEcoPumps() {
         // Ga naar wacht-fase
         eco_pump_state = ECO_WAIT;
         eco_pump_timer = millis();
+        Serial.println("Entering wait phase: 30 minutes");
       }
       break;
       
@@ -499,22 +523,23 @@ void handleEcoPumps() {
       
       // Check of we nog moeten wachten
       if (millis() - eco_pump_timer >= ECO_WAIT_DURATION) {
-        Serial.println("ECO: Wait period finished (30 min)");
+        Serial.println("\n=== WAIT PHASE FINISHED ===");
+        Serial.println("Duration: 30 minutes completed");
         
         // Check of we weer moeten starten
         if (should_start) {
           // Wissel naar andere pomp
           if (last_pump_was_sch) {
             eco_pump_state = ECO_PUMP_WON;
-            Serial.println("ECO: Starting WON pump (30 min)");
+            Serial.println("Starting WON pump (30 min)");
           } else {
             eco_pump_state = ECO_PUMP_SCH;
-            Serial.println("ECO: Starting SCH pump (30 min)");
+            Serial.println("Starting SCH pump (30 min)");
           }
           eco_pump_timer = millis();
         } else {
           // Niet meer nodig, terug naar IDLE
-          Serial.println("ECO: No more pumping needed");
+          Serial.println("No more pumping needed -> IDLE");
           eco_pump_state = ECO_IDLE;
         }
       }
@@ -723,7 +748,7 @@ String getWifiScanJson() {
   return json;
 }
 
-// V53: JSON - ONGEWIJZIGD t.o.v. V53
+// JSON - ONGEWIJZIGD
 String getLogData() {
   DynamicJsonDocument doc(2048);
   
@@ -793,6 +818,15 @@ String getLogData() {
   return json;
 }
 
+
+
+
+
+
+
+
+
+
 // ============== DEEL 3/5: MAIN PAGE UI ==============
 
 String getMainPage() {
@@ -837,11 +871,6 @@ String getMainPage() {
     .eco-status-badge {display:inline-block;padding:4px 12px;border-radius:4px;font-weight:bold;font-size:12px;margin-left:10px;}
     .eco-online {background:#0a0;color:#fff;}
     .eco-offline {background:#c00;color:#fff;}
-    .pump-controls {display:flex;gap:8px;justify-content:center;align-items:center;margin:8px 0;}
-    .pump-btn {background:#369;color:#fff;padding:6px 16px;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:bold;}
-    .pump-btn:hover {background:#036;}
-    .pump-btn.off {background:#c00;}
-    .pump-btn.off:hover {background:#900;}
     .pump-info {font-size:11px;color:#666;font-style:italic;margin-top:5px;text-align:center;}
     .pump-total {font-size:12px;color:#369;font-weight:bold;margin-top:3px;text-align:center;}
     .circuits-table-wrapper {overflow-x:auto;-webkit-overflow-scrolling:touch;border:2px solid #ddd;border-radius:8px;margin:15px 0;}
@@ -922,7 +951,6 @@ String getMainPage() {
           <td class="label">ETop (Hoogste temp)</td>
           <td class="value">)rawliteral";
   
-  // V53.1: ALTIJD tonen, NA als offline
   if (eco_boiler.online) {
     html += "<span class=\"status-ok\"><b>" + String(eco_boiler.temp_top, 1) + " &deg;C</b></span>";
   } else {
@@ -944,24 +972,33 @@ String getMainPage() {
   html += R"rawliteral(</td>
         </tr>
         <tr>
-          <td class="label">ET (Tmax pomp)</td>
+          <td class="label">Tmax pomp (Start)</td>
           <td class="value">)rawliteral";
   html += String(eco_max_temp, 1) + " &deg;C";
   html += R"rawliteral(</td>
         </tr>
         <tr>
-          <td class="label">EB (Tmin pomp)</td>
+          <td class="label">Tmin pomp (Stop)</td>
           <td class="value">)rawliteral";
   html += String(eco_min_temp, 1) + " &deg;C";
   html += R"rawliteral(</td>
         </tr>
         <tr>
           <td class="label">SCH Pomp</td>
-          <td class="value">
-            <div class="pump-controls">
-              <button class="pump-btn" onclick="pumpControl('sch','on')">ON</button>
-              <button class="pump-btn off" onclick="pumpControl('sch','off')">OFF</button>
-            </div>
+          <td class="value">)rawliteral";
+  
+  // V53.2: Circuit-style pump buttons met timer!
+  if (sch_pump_manual) {
+    unsigned long remaining = (MANUAL_PUMP_DURATION - (millis() - sch_pump_manual_start)) / 1000;
+    html += "<span class=\"override-badge timer\" data-remaining=\"" + String(remaining) + "\">ON " + 
+            String(remaining / 60) + ":" + String(remaining % 60, DEC) + "</span> ";
+    html += "<button class=\"btn-override btn-override-cancel\" onclick=\"cancelPump('sch')\">×</button>";
+  } else {
+    html += "<button class=\"btn-override\" onclick=\"setPump('sch', true)\">ON</button> ";
+    html += "<button class=\"btn-override\" onclick=\"setPump('sch', false)\">OFF</button>";
+  }
+  
+  html += R"rawliteral(
 )rawliteral";
   
   if (last_sch_pump.timestamp > 0) {
@@ -982,11 +1019,20 @@ String getMainPage() {
         </tr>
         <tr>
           <td class="label">WON Pomp</td>
-          <td class="value">
-            <div class="pump-controls">
-              <button class="pump-btn" onclick="pumpControl('won','on')">ON</button>
-              <button class="pump-btn off" onclick="pumpControl('won','off')">OFF</button>
-            </div>
+          <td class="value">)rawliteral";
+  
+  // V53.2: Circuit-style pump buttons met timer!
+  if (won_pump_manual) {
+    unsigned long remaining = (MANUAL_PUMP_DURATION - (millis() - won_pump_manual_start)) / 1000;
+    html += "<span class=\"override-badge timer\" data-remaining=\"" + String(remaining) + "\">ON " + 
+            String(remaining / 60) + ":" + String(remaining % 60, DEC) + "</span> ";
+    html += "<button class=\"btn-override btn-override-cancel\" onclick=\"cancelPump('won')\">×</button>";
+  } else {
+    html += "<button class=\"btn-override\" onclick=\"setPump('won', true)\">ON</button> ";
+    html += "<button class=\"btn-override\" onclick=\"setPump('won', false)\">OFF</button>";
+  }
+  
+  html += R"rawliteral(
 )rawliteral";
   
   if (last_won_pump.timestamp > 0) {
@@ -1089,10 +1135,15 @@ String getMainPage() {
   </div>
 
 <script>
-function pumpControl(type, action) {
+function setPump(type, state) {
   const endpoint = type === 'sch' 
-    ? (action === 'on' ? '/pump_sch_on' : '/pump_sch_off')
-    : (action === 'on' ? '/pump_won_on' : '/pump_won_off');
+    ? (state ? '/pump_sch_on' : '/pump_sch_off')
+    : (state ? '/pump_won_on' : '/pump_won_off');
+  fetch(endpoint).then(() => setTimeout(() => location.reload(), 500));
+}
+
+function cancelPump(type) {
+  const endpoint = type === 'sch' ? '/pump_sch_cancel' : '/pump_won_cancel';
   fetch(endpoint).then(() => setTimeout(() => location.reload(), 500));
 }
 
@@ -1128,9 +1179,30 @@ function refreshData() {
   return html;
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
 // ============== DEEL 4/5: SETTINGS PAGE & ENDPOINTS ==============
 
 void setupWebServer() {
+  // V53.2: Captive portal - redirect all requests naar settings in AP mode
+  server.onNotFound([](AsyncWebServerRequest *request){
+    if (ap_mode_active) {
+      request->redirect("/settings");
+    } else {
+      request->send(404, "text/plain", "Not found");
+    }
+  });
+
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html; charset=utf-8", getMainPage());
   });
@@ -1400,32 +1472,70 @@ input,select{padding:8px;border:1px solid #ccc;border-radius:4px;}
     request->send(200, "text/plain", "OK");
   });
 
-  // V53.1: AANGEPASTE pomp endpoints (instant, geen timers)
+  // V53.2: NIEUWE pomp endpoints met betere Serial output
   server.on("/pump_sch_on", HTTP_GET, [](AsyncWebServerRequest *request) {
+    Serial.println("\n=== MANUAL PUMP CONTROL ===");
+    Serial.println("Type: SCH");
+    Serial.println("Action: ON");
+    Serial.println("Duration: 60 seconds");
+    Serial.printf("Relay %d: LOW (pump ON)\n", RELAY_PUMP_SCH);
+    
     sch_pump_manual = true;
     sch_pump_manual_start = millis();
-    Serial.println("ECO: SCH pump ON (manual)");
     request->send(200, "text/plain", "OK");
   });
 
   server.on("/pump_sch_off", HTTP_GET, [](AsyncWebServerRequest *request) {
+    Serial.println("\n=== MANUAL PUMP CONTROL ===");
+    Serial.println("Type: SCH");
+    Serial.println("Action: OFF (forced)");
+    Serial.printf("Relay %d: HIGH (pump OFF)\n", RELAY_PUMP_SCH);
+    
     sch_pump_manual = false;
     if (mcp_available) mcp.digitalWrite(RELAY_PUMP_SCH, HIGH);
-    Serial.println("ECO: SCH pump OFF (manual)");
+    request->send(200, "text/plain", "OK");
+  });
+
+  server.on("/pump_sch_cancel", HTTP_GET, [](AsyncWebServerRequest *request) {
+    Serial.println("\n=== MANUAL PUMP CANCEL ===");
+    Serial.println("Type: SCH");
+    Serial.println("Manual mode cancelled");
+    
+    sch_pump_manual = false;
+    if (mcp_available) mcp.digitalWrite(RELAY_PUMP_SCH, HIGH);
     request->send(200, "text/plain", "OK");
   });
 
   server.on("/pump_won_on", HTTP_GET, [](AsyncWebServerRequest *request) {
+    Serial.println("\n=== MANUAL PUMP CONTROL ===");
+    Serial.println("Type: WON");
+    Serial.println("Action: ON");
+    Serial.println("Duration: 60 seconds");
+    Serial.printf("Relay %d: LOW (pump ON)\n", RELAY_PUMP_WON);
+    
     won_pump_manual = true;
     won_pump_manual_start = millis();
-    Serial.println("ECO: WON pump ON (manual)");
     request->send(200, "text/plain", "OK");
   });
 
   server.on("/pump_won_off", HTTP_GET, [](AsyncWebServerRequest *request) {
+    Serial.println("\n=== MANUAL PUMP CONTROL ===");
+    Serial.println("Type: WON");
+    Serial.println("Action: OFF (forced)");
+    Serial.printf("Relay %d: HIGH (pump OFF)\n", RELAY_PUMP_WON);
+    
     won_pump_manual = false;
     if (mcp_available) mcp.digitalWrite(RELAY_PUMP_WON, HIGH);
-    Serial.println("ECO: WON pump OFF (manual)");
+    request->send(200, "text/plain", "OK");
+  });
+
+  server.on("/pump_won_cancel", HTTP_GET, [](AsyncWebServerRequest *request) {
+    Serial.println("\n=== MANUAL PUMP CANCEL ===");
+    Serial.println("Type: WON");
+    Serial.println("Manual mode cancelled");
+    
+    won_pump_manual = false;
+    if (mcp_available) mcp.digitalWrite(RELAY_PUMP_WON, HIGH);
     request->send(200, "text/plain", "OK");
   });
 
@@ -1442,23 +1552,31 @@ void factoryResetNVS() {
   ESP.restart();
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
 // ============== DEEL 5/5: SETUP & LOOP ==============
 
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("\n\n=== HVAC Controller V53.1 ===");
-  Serial.println("WIJZIGINGEN t.o.v. V53:");
-  Serial.println("1.  ECO UI: ETop (hoogste temp) tonen ipv EAv (gemiddelde)");
-  Serial.println("2.  ECO UI: Alle 4 velden altijd tonen (NA als offline)");
-  Serial.println("3.  ECO UI: OFFLINE uit blauwe balk verwijderd");
-  Serial.println("4.  Pomp controls: ON/OFF buttons (niet toggles)");
-  Serial.println("5.  Pomp logica: START = temp_top > max OR qtot > threshold");
-  Serial.println("6.  Pomp logica: STOP = temp_top < min OR qtot < (threshold-hyst)");
-  Serial.println("7.  Pomp flow: 30 min pompen -> 30 min wacht -> wissel");
-  Serial.println("8.  Pomp tracking: Totalen per boiler (cumulatief in NVS)");
-  Serial.println("9.  Pomp UI: Laatste event + TOTAAL tonen");
-  Serial.println("10. WiFi: timeout 10s -> 20s (iPhone hotspot)");
+  Serial.println("\n\n=== HVAC Controller V53.2 ===");
+  Serial.println("WIJZIGINGEN t.o.v. V53.1:");
+  Serial.println("1. Pomp controls: Circuit-style buttons met 60s timer");
+  Serial.println("2. Pomp controls: Cancel button (×) tijdens werking");
+  Serial.println("3. Labels: Tmax pomp (Start) / Tmin pomp (Stop)");
+  Serial.println("4. Serial output: Betere debug info bij pomp acties");
+  Serial.println("5. Captive portal: Auto-open settings in AP mode");
 
   // Factory reset optie
   Serial.println("\nType 'R' binnen 3 sec voor NVS reset...");
@@ -1516,13 +1634,13 @@ void setup() {
   boiler_ref_temp = preferences.getFloat(NVS_BOILER_REF_TEMP, 20.0);
   boiler_layer_volume = preferences.getFloat(NVS_BOILER_VOLUME, 50.0);
   
-  // V53.1: Load last pump events
+  // Load last pump events
   last_sch_pump.timestamp = preferences.getULong(NVS_LAST_SCH_PUMP, 0);
   last_sch_pump.kwh_pumped = preferences.getFloat(NVS_LAST_SCH_KWH, 0.0);
   last_won_pump.timestamp = preferences.getULong(NVS_LAST_WON_PUMP, 0);
   last_won_pump.kwh_pumped = preferences.getFloat(NVS_LAST_WON_KWH, 0.0);
   
-  // V53.1: Load totalen
+  // Load totalen
   total_sch_kwh = preferences.getFloat(NVS_TOTAL_SCH_KWH, 0.0);
   total_won_kwh = preferences.getFloat(NVS_TOTAL_WON_KWH, 0.0);
   
@@ -1581,7 +1699,7 @@ void setup() {
     Serial.printf(" [%.3f kW]\n", circuits[i].power_kw);
   }
 
-  // V53.1: VERBETERDE WiFi verbinding met 20s timeout per poging
+  // WiFi verbinding met 20s timeout per poging
   WiFi.mode(WIFI_STA);
 
   if (static_ip_str.length() > 0 && static_ip.fromString(static_ip_str)) {
@@ -1601,7 +1719,6 @@ void setup() {
     while (!connected && retry_count < MAX_RETRIES) {
       WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
       
-      // V53.1: Timeout verhoogd naar 20s (iPhone hotspot)
       unsigned long start_attempt = millis();
       while (WiFi.status() != WL_CONNECTED && (millis() - start_attempt) < 20000) {
         delay(500);
@@ -1618,7 +1735,7 @@ void setup() {
         if (retry_count < MAX_RETRIES) {
           Serial.println("Disconnecting and retrying...");
           WiFi.disconnect();
-          delay(2000);  // V53.1: Langere delay (was 1000ms)
+          delay(2000);
         }
       }
     }
@@ -1633,8 +1750,15 @@ void setup() {
     WiFi.mode(WIFI_AP);
     WiFi.softAP("HVAC-Setup");
     ap_mode_active = true;
-    dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
+    
+    // V53.2: Captive portal setup
+    Serial.println("\n=== CAPTIVE PORTAL ACTIVE ===");
+    Serial.println("AP SSID: HVAC-Setup");
     Serial.println("AP IP: " + WiFi.softAPIP().toString());
+    Serial.println("DNS: Wildcard redirect to settings page");
+    Serial.println("→ Connect and settings will auto-open!");
+    
+    dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
   } else {
     Serial.println("\nWiFi connected: " + WiFi.localIP().toString());
     Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
