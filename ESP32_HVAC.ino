@@ -7,12 +7,11 @@ Thuis bereikbaar op http://hvactest.local of http://192.168.1.36 => Andere contr
 10jan26 12:00 Version V53: JSON formaat EXACT zoals Particle Photon
 11jan26 09:00 Version V53.1: ECO logica + UI fixes
 11jan26 11:30 Version V53.2: Circuit-style pump buttons + captive portal
+11jan26 13:00 Version V53.3: PATCH PLAN: Timer overflow fix + OFF override
 
-V53.2 PATCH PLAN:
-FIX 1: Pomp controls = circuit override style (60s timer + cancel)
-FIX 2: Betere Serial debug output
-FIX 3: Labels: "Tmax pomp (Start)" / "Tmin pomp (Stop)"
-FIX 4: Captive portal (auto-open settings) = Na AP opstart moet config pagina automatisch openen: http://192.168.4.1/settings
+Pomp controls = circuit override style (60s timer + cancel)
+=> Pomp buttons: [ON] = 60s force ON, [OFF] = direct uit (geen timer!)
+=> Dit moet consistent zijn!
 
 To do Later:
 - mDNS werkt niet 100% betrouwbaar op ESP32-C6 (maar IP adressen werken prima)
@@ -375,39 +374,45 @@ void savePumpEvent(const char* pump_type, float kwh) {
 
 
 
+
 // ============== DEEL 2/5: ECO PUMPS & POLLING FUNCTIES ==============
 
-// V53.2: NIEUWE handleEcoPumps() met 60s manual timer (zoals circuit override!)
+// V53.3: Track pump override state (ON or OFF)
+bool sch_pump_manual_on = true;  // true = ON override, false = OFF override
+bool won_pump_manual_on = true;
+
+// V53.3: handleEcoPumps() met timer reset en OFF override!
 void handleEcoPumps() {
   if (!mcp_available) return;
   
-  // V53.2: Manual mode zoals circuit override (60 seconden!)
+  // V53.3: Check timeouts en RESET manual flags! (FIX BUG #1)
   bool sch_manual_active = sch_pump_manual && (millis() - sch_pump_manual_start < MANUAL_PUMP_DURATION);
   bool won_manual_active = won_pump_manual && (millis() - won_pump_manual_start < MANUAL_PUMP_DURATION);
   
-  // Check timeouts
   if (sch_pump_manual && !sch_manual_active) {
     Serial.println("\n=== MANUAL PUMP TIMEOUT ===");
     Serial.println("SCH pump manual mode expired (60s)");
-    sch_pump_manual = false;
+    sch_pump_manual = false;  // V53.3: RESET FLAG! Anders overflow bij refresh!
   }
   if (won_pump_manual && !won_manual_active) {
     Serial.println("\n=== MANUAL PUMP TIMEOUT ===");
     Serial.println("WON pump manual mode expired (60s)");
-    won_pump_manual = false;
+    won_pump_manual = false;  // V53.3: RESET FLAG! Anders overflow bij refresh!
   }
   
+  // V53.3: Manual mode heeft prioriteit (ON of OFF!)
   if (sch_manual_active || won_manual_active) {
-    mcp.digitalWrite(RELAY_PUMP_SCH, sch_manual_active ? LOW : HIGH);
-    mcp.digitalWrite(RELAY_PUMP_WON, won_manual_active ? LOW : HIGH);
+    // V53.3: Gebruik override state (ON = LOW relay, OFF = HIGH relay)
+    mcp.digitalWrite(RELAY_PUMP_SCH, sch_manual_active ? (sch_pump_manual_on ? LOW : HIGH) : HIGH);
+    mcp.digitalWrite(RELAY_PUMP_WON, won_manual_active ? (won_pump_manual_on ? LOW : HIGH) : HIGH);
     return;
   }
   
-  // V53.1: START conditie (OR logica)
+  // START conditie (OR logica)
   bool should_start = eco_boiler.online 
                    && ((eco_boiler.temp_top > eco_max_temp) || (eco_boiler.qtot > eco_threshold));
   
-  // V53.1: STOP conditie (OR logica)
+  // STOP conditie (OR logica)
   bool should_stop = !eco_boiler.online
                   || ((eco_boiler.temp_top < eco_min_temp) || (eco_boiler.qtot < (eco_threshold - eco_hysteresis)));
   
@@ -827,6 +832,7 @@ String getLogData() {
 
 
 
+
 // ============== DEEL 3/5: MAIN PAGE UI ==============
 
 String getMainPage() {
@@ -881,6 +887,7 @@ String getMainPage() {
     .btn-override-cancel {background:#c00;}
     .btn-override-cancel:hover {background:#900;}
     .override-badge {background:#c00;color:#fff;padding:4px 8px;border-radius:4px;font-size:11px;font-weight:bold;}
+    .override-badge-off {background:#666;color:#fff;}
     @media (max-width: 600px) {
       .container {flex-direction:column;}
       .sidebar {width:100%;border-right:none;border-bottom:3px solid #c00;display:flex;justify-content:center;}
@@ -987,11 +994,17 @@ String getMainPage() {
           <td class="label">SCH Pomp</td>
           <td class="value">)rawliteral";
   
-  // V53.2: Circuit-style pump buttons met timer!
+  // V53.3: Circuit-style pump buttons met ON/OFF override support!
   if (sch_pump_manual) {
     unsigned long remaining = (MANUAL_PUMP_DURATION - (millis() - sch_pump_manual_start)) / 1000;
-    html += "<span class=\"override-badge timer\" data-remaining=\"" + String(remaining) + "\">ON " + 
-            String(remaining / 60) + ":" + String(remaining % 60, DEC) + "</span> ";
+    
+    // V53.3: Check of ON of OFF override (EXTERN GEDECLAREERDE VARIABELE!)
+    extern bool sch_pump_manual_on;
+    String badge_class = sch_pump_manual_on ? "override-badge" : "override-badge override-badge-off";
+    String badge_text = sch_pump_manual_on ? "ON" : "OFF";
+    
+    html += "<span class=\"" + badge_class + " timer\" data-remaining=\"" + String(remaining) + "\">" + 
+            badge_text + " " + String(remaining / 60) + ":" + String(remaining % 60, DEC) + "</span> ";
     html += "<button class=\"btn-override btn-override-cancel\" onclick=\"cancelPump('sch')\">×</button>";
   } else {
     html += "<button class=\"btn-override\" onclick=\"setPump('sch', true)\">ON</button> ";
@@ -1021,11 +1034,17 @@ String getMainPage() {
           <td class="label">WON Pomp</td>
           <td class="value">)rawliteral";
   
-  // V53.2: Circuit-style pump buttons met timer!
+  // V53.3: Circuit-style pump buttons met ON/OFF override support!
   if (won_pump_manual) {
     unsigned long remaining = (MANUAL_PUMP_DURATION - (millis() - won_pump_manual_start)) / 1000;
-    html += "<span class=\"override-badge timer\" data-remaining=\"" + String(remaining) + "\">ON " + 
-            String(remaining / 60) + ":" + String(remaining % 60, DEC) + "</span> ";
+    
+    // V53.3: Check of ON of OFF override (EXTERN GEDECLAREERDE VARIABELE!)
+    extern bool won_pump_manual_on;
+    String badge_class = won_pump_manual_on ? "override-badge" : "override-badge override-badge-off";
+    String badge_text = won_pump_manual_on ? "ON" : "OFF";
+    
+    html += "<span class=\"" + badge_class + " timer\" data-remaining=\"" + String(remaining) + "\">" + 
+            badge_text + " " + String(remaining / 60) + ":" + String(remaining % 60, DEC) + "</span> ";
     html += "<button class=\"btn-override btn-override-cancel\" onclick=\"cancelPump('won')\">×</button>";
   } else {
     html += "<button class=\"btn-override\" onclick=\"setPump('won', true)\">ON</button> ";
@@ -1191,10 +1210,15 @@ function refreshData() {
 
 
 
+
 // ============== DEEL 4/5: SETTINGS PAGE & ENDPOINTS ==============
 
+// V53.3: Access pump override state variables (declared in DEEL 2)
+extern bool sch_pump_manual_on;
+extern bool won_pump_manual_on;
+
 void setupWebServer() {
-  // V53.2: Captive portal - redirect all requests naar settings in AP mode
+  // Captive portal - redirect all requests naar settings in AP mode
   server.onNotFound([](AsyncWebServerRequest *request){
     if (ap_mode_active) {
       request->redirect("/settings");
@@ -1472,26 +1496,33 @@ input,select{padding:8px;border:1px solid #ccc;border-radius:4px;}
     request->send(200, "text/plain", "OK");
   });
 
-  // V53.2: NIEUWE pomp endpoints met betere Serial output
+  // V53.3: NIEUWE pomp endpoints met ON/OFF override support!
   server.on("/pump_sch_on", HTTP_GET, [](AsyncWebServerRequest *request) {
     Serial.println("\n=== MANUAL PUMP CONTROL ===");
     Serial.println("Type: SCH");
-    Serial.println("Action: ON");
+    Serial.println("Action: ON (override)");
     Serial.println("Duration: 60 seconds");
     Serial.printf("Relay %d: LOW (pump ON)\n", RELAY_PUMP_SCH);
     
     sch_pump_manual = true;
+    sch_pump_manual_on = true;  // V53.3: ON override!
     sch_pump_manual_start = millis();
+    
+    if (mcp_available) mcp.digitalWrite(RELAY_PUMP_SCH, LOW);
     request->send(200, "text/plain", "OK");
   });
 
   server.on("/pump_sch_off", HTTP_GET, [](AsyncWebServerRequest *request) {
     Serial.println("\n=== MANUAL PUMP CONTROL ===");
     Serial.println("Type: SCH");
-    Serial.println("Action: OFF (forced)");
+    Serial.println("Action: OFF (override)");
+    Serial.println("Duration: 60 seconds");
     Serial.printf("Relay %d: HIGH (pump OFF)\n", RELAY_PUMP_SCH);
     
-    sch_pump_manual = false;
+    sch_pump_manual = true;
+    sch_pump_manual_on = false;  // V53.3: OFF override!
+    sch_pump_manual_start = millis();
+    
     if (mcp_available) mcp.digitalWrite(RELAY_PUMP_SCH, HIGH);
     request->send(200, "text/plain", "OK");
   });
@@ -1502,29 +1533,35 @@ input,select{padding:8px;border:1px solid #ccc;border-radius:4px;}
     Serial.println("Manual mode cancelled");
     
     sch_pump_manual = false;
-    if (mcp_available) mcp.digitalWrite(RELAY_PUMP_SCH, HIGH);
     request->send(200, "text/plain", "OK");
   });
 
   server.on("/pump_won_on", HTTP_GET, [](AsyncWebServerRequest *request) {
     Serial.println("\n=== MANUAL PUMP CONTROL ===");
     Serial.println("Type: WON");
-    Serial.println("Action: ON");
+    Serial.println("Action: ON (override)");
     Serial.println("Duration: 60 seconds");
     Serial.printf("Relay %d: LOW (pump ON)\n", RELAY_PUMP_WON);
     
     won_pump_manual = true;
+    won_pump_manual_on = true;  // V53.3: ON override!
     won_pump_manual_start = millis();
+    
+    if (mcp_available) mcp.digitalWrite(RELAY_PUMP_WON, LOW);
     request->send(200, "text/plain", "OK");
   });
 
   server.on("/pump_won_off", HTTP_GET, [](AsyncWebServerRequest *request) {
     Serial.println("\n=== MANUAL PUMP CONTROL ===");
     Serial.println("Type: WON");
-    Serial.println("Action: OFF (forced)");
+    Serial.println("Action: OFF (override)");
+    Serial.println("Duration: 60 seconds");
     Serial.printf("Relay %d: HIGH (pump OFF)\n", RELAY_PUMP_WON);
     
-    won_pump_manual = false;
+    won_pump_manual = true;
+    won_pump_manual_on = false;  // V53.3: OFF override!
+    won_pump_manual_start = millis();
+    
     if (mcp_available) mcp.digitalWrite(RELAY_PUMP_WON, HIGH);
     request->send(200, "text/plain", "OK");
   });
@@ -1535,7 +1572,6 @@ input,select{padding:8px;border:1px solid #ccc;border-radius:4px;}
     Serial.println("Manual mode cancelled");
     
     won_pump_manual = false;
-    if (mcp_available) mcp.digitalWrite(RELAY_PUMP_WON, HIGH);
     request->send(200, "text/plain", "OK");
   });
 
@@ -1565,18 +1601,17 @@ void factoryResetNVS() {
 
 
 
+
 // ============== DEEL 5/5: SETUP & LOOP ==============
 
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("\n\n=== HVAC Controller V53.2 ===");
-  Serial.println("WIJZIGINGEN t.o.v. V53.1:");
-  Serial.println("1. Pomp controls: Circuit-style buttons met 60s timer");
-  Serial.println("2. Pomp controls: Cancel button (×) tijdens werking");
-  Serial.println("3. Labels: Tmax pomp (Start) / Tmin pomp (Stop)");
-  Serial.println("4. Serial output: Betere debug info bij pomp acties");
-  Serial.println("5. Captive portal: Auto-open settings in AP mode");
+  Serial.println("\n\n=== HVAC Controller V53.3 ===");
+  Serial.println("WIJZIGINGEN t.o.v. V53.2:");
+  Serial.println("1. Timer overflow fix: Manual flag reset na timeout");
+  Serial.println("2. OFF override: 60s force OFF met timer badge");
+  Serial.println("3. Consistent gedrag met circuit buttons");
 
   // Factory reset optie
   Serial.println("\nType 'R' binnen 3 sec voor NVS reset...");
