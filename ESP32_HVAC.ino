@@ -8,10 +8,19 @@ Thuis bereikbaar op http://hvactest.local of http://192.168.1.36 => Andere contr
 11jan26 09:00 Version V53.1: ECO logica + UI fixes
 11jan26 11:30 Version V53.2: Circuit-style pump buttons + captive portal
 11jan26 13:00 Version V53.3: PATCH PLAN: Timer overflow fix + OFF override
+11jan26 13:30 Version V53.4: Perfect resultaat!
 
-Pomp controls = circuit override style (60s timer + cancel)
-=> Pomp buttons: [ON] = 60s force ON, [OFF] = direct uit (geen timer!)
-=> Dit moet consistent zijn!
+V53.1 → V53.4:
+✅ Circuit-style pump buttons (klein, elegant)
+✅ 60s manual override met timer countdown
+✅ ON/OFF override (beide met timer!)
+✅ Cancel button (×) tijdens werking
+✅ Timer overflow DEFINITIEF opgelost
+✅ Auto-refresh bij timer=0
+✅ Server-side timer checks
+✅ Betere Serial output voor debugging
+✅ Captive portal voor AP mode
+✅ Labels: "Tmax pomp (Start)" / "Tmin pomp (Stop)"
 
 To do Later:
 - mDNS werkt niet 100% betrouwbaar op ESP32-C6 (maar IP adressen werken prima)
@@ -833,6 +842,7 @@ String getLogData() {
 
 
 
+
 // ============== DEEL 3/5: MAIN PAGE UI ==============
 
 String getMainPage() {
@@ -994,18 +1004,26 @@ String getMainPage() {
           <td class="label">SCH Pomp</td>
           <td class="value">)rawliteral";
   
-  // V53.3: Circuit-style pump buttons met ON/OFF override support!
+  // V53.4: Server-side check of timer nog geldig is! (FIX OVERFLOW!)
   if (sch_pump_manual) {
-    unsigned long remaining = (MANUAL_PUMP_DURATION - (millis() - sch_pump_manual_start)) / 1000;
+    unsigned long elapsed = millis() - sch_pump_manual_start;
     
-    // V53.3: Check of ON of OFF override (EXTERN GEDECLAREERDE VARIABELE!)
-    extern bool sch_pump_manual_on;
-    String badge_class = sch_pump_manual_on ? "override-badge" : "override-badge override-badge-off";
-    String badge_text = sch_pump_manual_on ? "ON" : "OFF";
-    
-    html += "<span class=\"" + badge_class + " timer\" data-remaining=\"" + String(remaining) + "\">" + 
-            badge_text + " " + String(remaining / 60) + ":" + String(remaining % 60, DEC) + "</span> ";
-    html += "<button class=\"btn-override btn-override-cancel\" onclick=\"cancelPump('sch')\">×</button>";
+    // V53.4: ALLEEN badge tonen als timer NOG NIET verlopen is!
+    if (elapsed < MANUAL_PUMP_DURATION) {
+      unsigned long remaining = (MANUAL_PUMP_DURATION - elapsed) / 1000;
+      
+      extern bool sch_pump_manual_on;
+      String badge_class = sch_pump_manual_on ? "override-badge" : "override-badge override-badge-off";
+      String badge_text = sch_pump_manual_on ? "ON" : "OFF";
+      
+      html += "<span class=\"" + badge_class + " timer\" data-remaining=\"" + String(remaining) + "\">" + 
+              badge_text + " " + String(remaining / 60) + ":" + String(remaining % 60, DEC) + "</span> ";
+      html += "<button class=\"btn-override btn-override-cancel\" onclick=\"cancelPump('sch')\">×</button>";
+    } else {
+      // V53.4: Timer verlopen - toon normale buttons!
+      html += "<button class=\"btn-override\" onclick=\"setPump('sch', true)\">ON</button> ";
+      html += "<button class=\"btn-override\" onclick=\"setPump('sch', false)\">OFF</button>";
+    }
   } else {
     html += "<button class=\"btn-override\" onclick=\"setPump('sch', true)\">ON</button> ";
     html += "<button class=\"btn-override\" onclick=\"setPump('sch', false)\">OFF</button>";
@@ -1034,18 +1052,26 @@ String getMainPage() {
           <td class="label">WON Pomp</td>
           <td class="value">)rawliteral";
   
-  // V53.3: Circuit-style pump buttons met ON/OFF override support!
+  // V53.4: Server-side check of timer nog geldig is! (FIX OVERFLOW!)
   if (won_pump_manual) {
-    unsigned long remaining = (MANUAL_PUMP_DURATION - (millis() - won_pump_manual_start)) / 1000;
+    unsigned long elapsed = millis() - won_pump_manual_start;
     
-    // V53.3: Check of ON of OFF override (EXTERN GEDECLAREERDE VARIABELE!)
-    extern bool won_pump_manual_on;
-    String badge_class = won_pump_manual_on ? "override-badge" : "override-badge override-badge-off";
-    String badge_text = won_pump_manual_on ? "ON" : "OFF";
-    
-    html += "<span class=\"" + badge_class + " timer\" data-remaining=\"" + String(remaining) + "\">" + 
-            badge_text + " " + String(remaining / 60) + ":" + String(remaining % 60, DEC) + "</span> ";
-    html += "<button class=\"btn-override btn-override-cancel\" onclick=\"cancelPump('won')\">×</button>";
+    // V53.4: ALLEEN badge tonen als timer NOG NIET verlopen is!
+    if (elapsed < MANUAL_PUMP_DURATION) {
+      unsigned long remaining = (MANUAL_PUMP_DURATION - elapsed) / 1000;
+      
+      extern bool won_pump_manual_on;
+      String badge_class = won_pump_manual_on ? "override-badge" : "override-badge override-badge-off";
+      String badge_text = won_pump_manual_on ? "ON" : "OFF";
+      
+      html += "<span class=\"" + badge_class + " timer\" data-remaining=\"" + String(remaining) + "\">" + 
+              badge_text + " " + String(remaining / 60) + ":" + String(remaining % 60, DEC) + "</span> ";
+      html += "<button class=\"btn-override btn-override-cancel\" onclick=\"cancelPump('won')\">×</button>";
+    } else {
+      // V53.4: Timer verlopen - toon normale buttons!
+      html += "<button class=\"btn-override\" onclick=\"setPump('won', true)\">ON</button> ";
+      html += "<button class=\"btn-override\" onclick=\"setPump('won', false)\">OFF</button>";
+    }
   } else {
     html += "<button class=\"btn-override\" onclick=\"setPump('won', true)\">ON</button> ";
     html += "<button class=\"btn-override\" onclick=\"setPump('won', false)\">OFF</button>";
@@ -1175,6 +1201,7 @@ function cancelOverride(circuit) {
   fetch('/circuit_override_cancel?circuit=' + circuit).then(() => setTimeout(() => location.reload(), 500));
 }
 
+// V53.4: Timer countdown met auto-refresh bij 0!
 setInterval(() => {
   document.querySelectorAll('.timer').forEach(badge => {
     let remaining = parseInt(badge.dataset.remaining);
@@ -1183,6 +1210,10 @@ setInterval(() => {
       badge.dataset.remaining = remaining;
       const state = badge.textContent.split(' ')[0];
       badge.textContent = state + ' ' + Math.floor(remaining/60) + ':' + (remaining%60).toString().padStart(2,'0');
+    } else if (remaining === 0) {
+      // V53.4: Auto-refresh bij 0 om overflow te voorkomen!
+      console.log('Timer reached 0 - auto-refreshing page');
+      setTimeout(() => location.reload(), 1000);
     }
   });
 }, 1000);
@@ -1197,6 +1228,7 @@ function refreshData() {
   
   return html;
 }
+
 
 
 
@@ -1602,16 +1634,17 @@ void factoryResetNVS() {
 
 
 
+
 // ============== DEEL 5/5: SETUP & LOOP ==============
 
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("\n\n=== HVAC Controller V53.3 ===");
-  Serial.println("WIJZIGINGEN t.o.v. V53.2:");
-  Serial.println("1. Timer overflow fix: Manual flag reset na timeout");
-  Serial.println("2. OFF override: 60s force OFF met timer badge");
-  Serial.println("3. Consistent gedrag met circuit buttons");
+  Serial.println("\n\n=== HVAC Controller V53.4 ===");
+  Serial.println("WIJZIGINGEN t.o.v. V53.3:");
+  Serial.println("1. Server-side timer check: Voorkomt badge bij verlopen timer");
+  Serial.println("2. Auto-refresh bij timer=0: Pagina ververst automatisch");
+  Serial.println("3. Timer overflow DEFINITIEF opgelost!");
 
   // Factory reset optie
   Serial.println("\nType 'R' binnen 3 sec voor NVS reset...");
