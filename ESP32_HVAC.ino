@@ -2004,13 +2004,17 @@ void setup() {
     const int MAX_RETRIES = 5;
     bool connected = false;
     
-    while (!connected && retry_count < MAX_RETRIES) {
-      WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
 
-      // Haal MAC op NA WiFi.begin voor betere compatibiliteit
+    while (!connected && retry_count < MAX_RETRIES) {
+    WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
+  
+    // Haal MAC op NA eerste WiFi.begin
+    if (retry_count == 0) {
       mac_address = WiFi.macAddress();
       Serial.println("MAC adres: " + mac_address);
-      
+    }
+
+
       unsigned long start_attempt = millis();
       while (WiFi.status() != WL_CONNECTED && (millis() - start_attempt) < 20000) {
         delay(500);
