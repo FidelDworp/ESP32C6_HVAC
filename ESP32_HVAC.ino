@@ -12,6 +12,7 @@ Thuis bereikbaar op http://hvactest.local of http://192.168.1.36 => Andere contr
 12jan26 19:00 Version V53.4: Kleine update: JSON endpoint = /json
 12jan26 22:00 Version V53.5: ECO-inspired improvements + core fixes
 13jan26 21:20 Voeg Mac adres toe om Statisch IP adres op router in te stellen.
+14jan26 22:20 Schakel ESP32 C6 Power save uit: Betere connectie?.
 
 
 To do Later:
@@ -33,6 +34,7 @@ To do Later:
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include <esp_wifi.h>
 
 Preferences preferences;
 
@@ -2021,17 +2023,22 @@ void setup() {
         Serial.print(".");
       }
       
+
+
+
       if (WiFi.status() == WL_CONNECTED) {
         connected = true;
         Serial.println("\n✓ WiFi connected!");
-        
-        // ===== FIX: WiFi power save UIT =====
-        WiFi.setSleep(false);
-        Serial.println("WiFi power save: DISABLED");
-        
+  
+        // ===== FIX: WiFi power save UIT (ESP32-C6 low-level API) =====
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        Serial.println("WiFi power save: DISABLED (ESP32-C6)");
+  
       } else {
+
         retry_count++;
         Serial.printf("\n✗ Attempt %d/%d failed\n", retry_count, MAX_RETRIES);
+
 
         if (retry_count < MAX_RETRIES) {
           Serial.println("Disconnecting and retrying...");
