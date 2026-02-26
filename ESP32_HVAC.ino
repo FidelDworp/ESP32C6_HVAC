@@ -1,22 +1,23 @@
 /* ESP32C6_HVAC.ino = Centrale HVAC controller voor kelder (ESP32-C6) op basis van particle sketch voor Flobecq
 Transition from Photon based to ESP32 based Home automation system. Developed together with ChatGPT & Grok in januari '26.
-Thuis bereikbaar op http://hvactest.local of http://192.168.1.36 => Andere controller: Naam (sectie DNS/MDNS) + static IP aanpassen!
+Thuis bereikbaar op http://hvac.local of static IP http://192.168.0.70 => Andere controller: Naam (sectie DNS/MDNS) + static IP aanpassen!
 
-10jan26 08:30 Version V52: UI & JSON Improvements: "TRY1"
-10jan26 10:50 Version V52: UI & JSON Improvements: "TRY2"
-10jan26 12:00 Version V53: JSON formaat EXACT zoals Particle Photon
-11jan26 09:00 Version V53.1: ECO logica + UI fixes
-11jan26 11:30 Version V53.2: Circuit-style pump buttons + captive portal
-11jan26 13:00 Version V53.3: PATCH PLAN: Timer overflow fix + OFF override
-11jan26 13:30 Version V53.4: Perfect resultaat!
-12jan26 19:00 Version V53.4: Kleine update: JSON endpoint = /json
-12jan26 22:00 Version V53.5: ECO-inspired improvements + core fixes
-13jan26 21:20 Voeg Mac adres toe om Statisch IP adres op router in te stellen.
-14jan26 22:20 Schakel ESP32 C6 Power save uit: Betere connectie?.
+26feb26 17:30 Version v 1.2: Static IP setting geactiveerd: Gebruik: 192.168.0.70 (zie tabel)
+10jan26 08:30 Version v 1.1: UI & JSON Improvements
 
+✅ JSON parsing fix: ET/EB → ETopH/EBotL (CRITICAL!)
+✅ Pump timers: 30 min → 1 min cycles (per spec!)
+✅ State machine: ECO_WAIT split → WAIT_SCH (1m) + WAIT_WON (2m)
+✅ Defaults: Tmin=80°C, Tmax=90°C (correct thresholds)
+✅ Smart status messages (context-aware, like ECO v1.3)
+✅ Status banner bovenaan pagina (groot, prominent)
+✅ Trend indicators (↑↓→) voor ECO temp en energie
+✅ Color coding: temp zones (blauw/groen/oranje/rood)
+✅ Refresh knop onderaan (was bovenaan)
+✅ pump_status in JSON (voor externe monitoring)
 
 To do Later:
-- mDNS werkt niet 100% betrouwbaar op ESP32-C6 (maar IP adressen werken prima)
+- mDNS verbeteren! (werkt niet 100% betrouwbaar)
 */
 
 
@@ -34,7 +35,6 @@ To do Later:
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <time.h>
-#include <esp_wifi.h>
 
 Preferences preferences;
 
@@ -116,7 +116,6 @@ String room_id = "HVAC";
 String wifi_ssid = "";
 String wifi_pass = "";
 String static_ip_str = "";
-String mac_address = "";  // Voor display in settings
 IPAddress static_ip;
 int circuits_num = 7;
 Circuit circuits[16];
@@ -1580,27 +1579,6 @@ input,select{padding:8px;border:1px solid #ccc;border-radius:4px;}
   <div class="main">
 <div class="warning">OPGEPAST: Wijzigt permanente instellingen!<br>Verkeerde WiFi kan controller onbereikbaar maken!<br><br><strong>Geen WiFi?</strong> Controller start AP: HVAC-Setup<br>Ga naar http://192.168.4.1/settings</div>
 
-<!-- MAC ADRES BOX -->
-<div style="background:#e6f0ff;border:3px solid #336699;padding:20px;margin:20px;border-radius:8px;text-align:center;">
-  <h3 style="margin:0 0 10px 0;color:#336699;">📡 Controller MAC Adres</h3>
-  <div style="font-size:20px;font-weight:bold;color:#003366;font-family:monospace;background:#fff;padding:10px;border-radius:4px;display:inline-block;margin:10px 0;border:2px solid #336699;">)rawliteral" + mac_address + R"rawliteral(</div>
-  <div style="font-size:13px;color:#666;margin-top:10px;">💡 Kopieer dit MAC-adres voor DHCP-reservering in je router</div>
-</div>
-
-<!-- AANBEVOLEN CONFIGURATIE -->
-<div style="background:#fffacd;border:2px solid #336699;padding:15px;margin:20px;border-radius:8px;font-size:14px;">
-  <h4 style="margin:0 0 10px 0;color:#336699;">✅ Aanbevolen: DHCP met MAC-reservering</h4>
-  <ol style="margin:10px 0;padding-left:25px;line-height:1.6;">
-    <li>Kopieer het MAC-adres hierboven</li>
-    <li>Log in op je router (meestal 192.168.1.1)</li>
-    <li>Ga naar: LAN → DHCP Server → Manual Assignment</li>
-    <li>Voeg toe: MAC-adres + gewenst IP (bijv. 192.168.1.99)</li>
-    <li>Laat hieronder het "Static IP" veld <strong>LEEG</strong></li>
-    <li>Sla op en reboot deze controller</li>
-  </ol>
-</div>
-
-
 <form action="/save_settings" method="get">
   
   <h2>WiFi Configuratie</h2>
@@ -1992,12 +1970,15 @@ void setup() {
   // WiFi verbinding met 20s timeout per poging
   WiFi.mode(WIFI_STA);
 
+
   if (static_ip_str.length() > 0 && static_ip.fromString(static_ip_str)) {
-    IPAddress gateway(192, 168, 1, 1);
+    IPAddress gateway(static_ip[0], static_ip[1], static_ip[2], 1);
     IPAddress subnet(255, 255, 255, 0);
     WiFi.config(static_ip, gateway, subnet, gateway);
-    Serial.println("Static IP: " + static_ip_str);
+    Serial.printf("Static IP: %s  Gateway (auto): %s\n", 
+                  static_ip_str.c_str(), gateway.toString().c_str());
   }
+
 
   if (wifi_ssid.length() > 0) {
     Serial.printf("\nConnecting to '%s'...\n", wifi_ssid.c_str());
@@ -2006,40 +1987,22 @@ void setup() {
     const int MAX_RETRIES = 5;
     bool connected = false;
     
-
     while (!connected && retry_count < MAX_RETRIES) {
-    WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
-  
-    // Haal MAC op NA eerste WiFi.begin
-    if (retry_count == 0) {
-      mac_address = WiFi.macAddress();
-      Serial.println("MAC adres: " + mac_address);
-    }
-
-
+      WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
+      
       unsigned long start_attempt = millis();
       while (WiFi.status() != WL_CONNECTED && (millis() - start_attempt) < 20000) {
         delay(500);
         Serial.print(".");
       }
       
-
-
-
       if (WiFi.status() == WL_CONNECTED) {
         connected = true;
         Serial.println("\n✓ WiFi connected!");
-  
-        // ===== FIX: WiFi power save UIT (ESP32-C6 low-level API) =====
-        esp_wifi_set_ps(WIFI_PS_NONE);
-        Serial.println("WiFi power save: DISABLED (ESP32-C6)");
-  
       } else {
-
         retry_count++;
         Serial.printf("\n✗ Attempt %d/%d failed\n", retry_count, MAX_RETRIES);
-
-
+        
         if (retry_count < MAX_RETRIES) {
           Serial.println("Disconnecting and retrying...");
           WiFi.disconnect();
