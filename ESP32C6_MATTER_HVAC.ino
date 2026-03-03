@@ -10,22 +10,11 @@ app0,     app,  ota_0,   0x10000,  0x600000,
 app1,     app,  ota_1,   0x610000, 0x600000,
 spiffs,   data, spiffs,  0xC10000, 0x3F0000,
 
-3mar26        Version v 1.5: HTML compressie — reserve(10000), CSS compact, settings vereenvoudigd
+3mar26        Version v 1.6: /matter pagina toegevoegd, serial R-reset gefixed, boot-tekst opgeruimd
 2mar26 16:54  Version v 1.4: Matter integrated, nvs correcties
 1mar26 16:54  Version v 1.3: Matter integrated
 26feb26 17:30 Version v 1.2: Static IP setting geactiveerd: Gebruik: 192.168.0.70 (zie tabel)
 10jan26 08:30 Version v 1.1: UI & JSON Improvements
-
-✅ JSON parsing fix: ET/EB → ETopH/EBotL (CRITICAL!)
-✅ Pump timers: 30 min → 1 min cycles (per spec!)
-✅ State machine: ECO_WAIT split → WAIT_SCH (1m) + WAIT_WON (2m)
-✅ Defaults: Tmin=80°C, Tmax=90°C (correct thresholds)
-✅ Smart status messages (context-aware, like ECO v1.3)
-✅ Status banner bovenaan pagina (groot, prominent)
-✅ Trend indicators (↑↓→) voor ECO temp en energie
-✅ Color coding: temp zones (blauw/groen/oranje/rood)
-✅ Refresh knop onderaan (was bovenaan)
-✅ pump_status in JSON (voor externe monitoring)
 
 To do Later:
 - mDNS verbeteren! (werkt niet 100% betrouwbaar)
@@ -1122,6 +1111,7 @@ String getMainPage() {
   <div class="container">
     <div class="sidebar">
       <a href="/" class="active">Status</a>
+      <a href="/matter">Matter</a>
       <a href="/update">OTA</a>
       <a href="/json">JSON</a>
       <a href="/settings">Settings</a>
@@ -1518,6 +1508,85 @@ h1{color:#369;}
     ESP.restart();
   });
 
+  server.on("/matter", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String pairingCode = Matter.isDeviceCommissioned() ? "" : Matter.getManualPairingCode();
+    String html;
+    html.reserve(3000);
+    html = R"rawliteral(
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Matter</title>
+<style>
+body{font-family:Arial,sans-serif;background:#fff;margin:0;padding:0;}
+.header{display:flex;background:#ffcc00;color:#000;padding:10px 15px;font-size:18px;font-weight:bold;}
+.header-left{flex:1;}.header-right{flex:1;text-align:right;font-size:15px;}
+.sidebar{width:80px;padding:10px 5px;background:#fff;border-right:3px solid #c00;box-sizing:border-box;flex-shrink:0;}
+.sidebar a{display:block;background:#369;color:#fff;padding:8px;margin:8px auto;text-decoration:none;font-weight:bold;font-size:12px;border-radius:6px;text-align:center;width:60px;}
+.sidebar a:hover{background:#036;}.sidebar a.active{background:#c00;}
+.container{display:flex;min-height:calc(100vh - 60px);}
+.main{flex:1;padding:30px;}
+.card{background:#e6f0ff;border:2px solid #369;border-radius:10px;padding:25px;max-width:500px;margin:20px 0;}
+.code{font-family:monospace;font-size:28px;font-weight:bold;color:#003366;background:#fff;padding:12px 20px;border-radius:6px;border:2px solid #369;display:inline-block;letter-spacing:2px;margin:12px 0;}
+.ok{color:#060;font-size:22px;font-weight:bold;}
+.btn-reset{background:#c00;color:#fff;padding:10px 24px;border:none;border-radius:6px;font-size:15px;cursor:pointer;margin-top:20px;}
+.btn-reset:hover{background:#900;}
+.hint{font-size:13px;color:#666;margin-top:8px;}
+@media(max-width:600px){.container{flex-direction:column;}.sidebar{width:100%;border-right:none;border-bottom:3px solid #c00;display:flex;justify-content:center;}.sidebar a{margin:0 3px;}}
+</style></head><body>
+<div class="header">
+  <div class="header-left">)rawliteral" + room_id + R"rawliteral(</div>
+  <div class="header-right">Matter / HomeKit</div>
+</div>
+<div class="container">
+  <div class="sidebar">
+    <a href="/">Status</a>
+    <a href="/matter" class="active">Matter</a>
+    <a href="/update">OTA</a>
+    <a href="/json">JSON</a>
+    <a href="/settings">Settings</a>
+  </div>
+  <div class="main"><div class="card">)rawliteral";
+
+    if (Matter.isDeviceCommissioned()) {
+      html += R"rawliteral(<div class="ok">&#x2705; Matter gepaard</div>
+        <p>Deze controller is verbonden met Apple Home.</p>)rawliteral";
+    } else {
+      html += R"rawliteral(<h2 style="color:#369;margin-top:0;">Matter koppelen</h2>
+        <p><b>1.</b> Open de <b>Apple Home</b> app</p>
+        <p><b>2.</b> Tik op <b>+</b> &rarr; <b>Accessoire toevoegen</b> &rarr; <b>Meer opties</b></p>
+        <p><b>3.</b> Voer de onderstaande code in:</p>
+        <div class="code">)rawliteral" + pairingCode + R"rawliteral(</div>
+        <p class="hint">Of scan de QR-code via de Apple Home app.</p>)rawliteral";
+    }
+
+    html += R"rawliteral(
+        <br>
+        <button class="btn-reset" onclick="if(confirm('Matter pairing wissen?')) location.href='/matter_reset';">
+          Matter reset (pairing wissen)
+        </button>
+        <p class="hint">Matter reset wist alleen de HomeKit koppeling. HVAC instellingen blijven intact.</p>
+      </div></div></div>
+</body></html>
+)rawliteral";
+    request->send(200, "text/html; charset=utf-8", html);
+  });
+
+  server.on("/matter_reset", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(200, "text/html",
+      "<h2 style='text-align:center;padding:40px;color:#c00;'>Matter pairing gewist.<br>Rebooting...</h2>");
+    Serial.println("\n=== MATTER RESET via web ===");
+    nvs_handle_t h;
+    const char* ns[] = {"chip-factory", "chip-config", "chip-counters", "chip-kvs"};
+    for (int k = 0; k < 4; k++) {
+      if (nvs_open(ns[k], NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_all(h); nvs_commit(h); nvs_close(h);
+        Serial.printf("  gewist: %s\n", ns[k]);
+      }
+    }
+    delay(800);
+    ESP.restart();
+  });
+
   server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request){
     String html;
     html.reserve(10000);
@@ -1555,6 +1624,7 @@ input,select{padding:8px;border:1px solid #ccc;border-radius:4px;}
 <div class="container">
   <div class="sidebar">
     <a href="/">Status</a>
+    <a href="/matter">Matter</a>
     <a href="/update">OTA</a>
     <a href="/json">JSON</a>
     <a href="/settings" class="active">Settings</a>
@@ -1864,29 +1934,23 @@ void factoryResetNVS() {
 
 void setup() {
   Serial.begin(115200);
-  delay(500);
-  Serial.println("\n\n=== HVAC Controller V53.5 ===");
-  Serial.println("WIJZIGINGEN t.o.v. V53.4:");
-  Serial.println("1. JSON parsing fix: ET/EB → ETopH/EBotL");
-  Serial.println("2. Pump timers: 30 min → 1 min cycles");
-  Serial.println("3. State machine: WAIT split → WAIT_SCH + WAIT_WON");
-  Serial.println("4. Defaults: Tmin=80°C, Tmax=90°C");
-  Serial.println("5. Smart status messages (context-aware)");
-  Serial.println("6. Status banner bovenaan pagina");
-  Serial.println("7. Trend indicators (↑↓→) voor temp & energie");
-  Serial.println("8. Color coding voor temp zones");
-  Serial.println("9. Refresh knop onderaan");
-  Serial.println("10. pump_status in JSON");
-
-  // Factory reset optie
-  Serial.println("\nType 'R' binnen 3 sec voor NVS reset...");
+  delay(1500);  // Wacht tot Serial Monitor klaar is
+  while (Serial.available()) Serial.read();  // Flush eventuele rommel
+  Serial.println("\n\n=== HVAC Controller v1.6 ===");
+  Serial.println("Commando's: 'R' = NVS reset, 'reset-matter', 'reset-all', 'status'");
+  Serial.println("\nType 'R' binnen 5 sec voor volledige NVS reset...");
   unsigned long start = millis();
-  while (millis() - start < 3000) {
+  while (millis() - start < 5000) {
     if (Serial.available() > 0) {
       char c = Serial.read();
-      if (c == 'R' || c == 'r') factoryResetNVS();
+      if (c == 'R' || c == 'r') {
+        Serial.println("-> NVS reset gestart!");
+        factoryResetNVS();
+      }
     }
+    delay(10);
   }
+  Serial.println("(geen reset)");
 
   // I2C & MCP23017
   Wire.begin(I2C_SDA, I2C_SCL);
@@ -2180,21 +2244,50 @@ void setup() {
       return true;
     });
 
-    // Matter starten
+    // Matter starten — detecteer fout via isDeviceCommissioned na begin
     Matter.begin();
+
+    // Check of Matter correct geinitialiseerd is
+    bool matter_ok = true;
+    // Korte delay om stack te laten starten
+    delay(200);
+    // Als getManualPairingCode() leeg is EN niet commissioned → init gefaald
+    if (!Matter.isDeviceCommissioned() && Matter.getManualPairingCode().length() < 5) {
+      matter_ok = false;
+    }
 
     // Pairing check
     Serial.println(F("\n══════════════════════════════════════════"));
-    if (!Matter.isDeviceCommissioned()) {
+    if (!matter_ok) {
+      Serial.println(F("MATTER: Initialisatie MISLUKT (NVS corrupt?)"));
+      Serial.println(F("-> Matter NVS wordt automatisch gewist en reboot..."));
+      nvs_handle_t h;
+      const char* ns[] = {"chip-factory", "chip-config", "chip-counters", "chip-kvs"};
+      for (int k = 0; k < 4; k++) {
+        if (nvs_open(ns[k], NVS_READWRITE, &h) == ESP_OK) {
+          nvs_erase_all(h); nvs_commit(h); nvs_close(h);
+          Serial.printf("  gewist: %s\n", ns[k]);
+        }
+      }
+      delay(500);
+      ESP.restart();
+    } else if (!Matter.isDeviceCommissioned()) {
       Serial.println(F("MATTER: Nog niet gepaard."));
       Serial.println(F("► Manuele code:"));
       Serial.println("    " + Matter.getManualPairingCode());
-      Serial.println(F("► Home app → + → Accessoire → Meer opties → code invoeren"));
-      Serial.println(F("Wacht op commissioning..."));
-      while (!Matter.isDeviceCommissioned()) { delay(500); Serial.print("."); }
-      Serial.println(F("\nGEPAARD!"));
+      Serial.println("► http://" + WiFi.localIP().toString() + "/matter");
+      Serial.println(F("Wacht op commissioning... (timeout 5 min, daarna doorgaan)"));
+      unsigned long pair_start = millis();
+      while (!Matter.isDeviceCommissioned() && (millis() - pair_start < 300000)) {
+        delay(500); Serial.print(".");
+      }
+      if (Matter.isDeviceCommissioned()) {
+        Serial.println(F("\nGEPAARD!"));
+      } else {
+        Serial.println(F("\nTimeout — doorgaan zonder pairing. Ga naar /matter om te koppelen."));
+      }
     } else {
-      Serial.println(F("MATTER: Al gepaard. Typ 'reset-matter' om te wissen."));
+      Serial.println(F("MATTER: Al gepaard. Ga naar /matter voor reset."));
     }
     Serial.println(F("══════════════════════════════════════════\n"));
   }
