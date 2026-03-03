@@ -10,7 +10,9 @@ app0,     app,  ota_0,   0x10000,  0x600000,
 app1,     app,  ota_1,   0x610000, 0x600000,
 spiffs,   data, spiffs,  0xC10000, 0x3F0000,
 
+3mar26        Version v 1.5: HTML compressie — reserve(10000), CSS compact, settings vereenvoudigd
 2mar26 16:54  Version v 1.4: Matter integrated, nvs correcties
+1mar26 16:54  Version v 1.3: Matter integrated
 26feb26 17:30 Version v 1.2: Static IP setting geactiveerd: Gebruik: 192.168.0.70 (zie tabel)
 10jan26 08:30 Version v 1.1: UI & JSON Improvements
 
@@ -1039,10 +1041,10 @@ String getMainPage() {
   String pumpStatusMsg = getPumpStatusMessage();
   
   String html;
-  html.reserve(40000);
+  html.reserve(10000);
   html = R"rawliteral(
 <!DOCTYPE html>
-<html lang="nl">
+<html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1053,26 +1055,9 @@ String getMainPage() {
     .header-left {flex:1;}
     .header-right {flex:1;text-align:right;font-size:15px;}
     
-    /* V53.5: NIEUW - Status banner (prominent!) */
-    .status-banner {
-      background: linear-gradient(135deg, #336699 0%, #2a5580 100%);
-      color: #fff;
-      padding: 15px 20px;
-      display: flex;
-      align-items: center;
-      border-bottom: 3px solid #ffcc00;
-      font-size: 15px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    .status-label {
-      font-weight: bold;
-      margin-right: 10px;
-      font-size: 16px;
-    }
-    .status-message {
-      flex: 1;
-      line-height: 1.4;
-    }
+    .status-banner{background:#336699;color:#fff;padding:10px 15px;display:flex;align-items:center;border-bottom:3px solid #ffcc00;font-size:14px;}
+    .status-label{font-weight:bold;margin-right:8px;}
+    .status-message{flex:1;}
     
     .container {display:flex;min-height:calc(100vh - 110px);}
     .sidebar {width:80px;padding:10px 5px;background:#fff;border-right:3px solid #c00;}
@@ -1084,9 +1069,8 @@ String getMainPage() {
     .section-divider {border-top:2px solid #ccc;margin:15px 0;}
     .blue-divider {border-top:3px solid #336699;margin:25px 0;}
     
-    /* V53.5: Refresh knop naar beneden verplaatst - niet meer bovenaan! */
-    .refresh-btn {background:#369;color:#fff;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:bold;margin:20px 0;width:100%;max-width:300px;}
-    .refresh-btn:hover {background:#036;}
+    .refresh-btn{background:#369;color:#fff;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:bold;margin:20px 0;width:100%;max-width:300px;}
+    .refresh-btn:hover{background:#036;}
     
     table {width:100%;border-collapse:collapse;margin-bottom:15px;}
     td.label {color:#369;font-size:13px;padding:8px 5px;border-bottom:1px solid #ddd;text-align:left;}
@@ -1111,23 +1095,9 @@ String getMainPage() {
     .override-badge {background:#c00;color:#fff;padding:4px 8px;border-radius:4px;font-size:11px;font-weight:bold;}
     .override-badge-off {background:#666;color:#fff;}
     
-    /* V53.5: NIEUW - Temperature color zones */
-    .temp-cold { color: #0af; font-weight: bold; }
-    .temp-warm { color: #0a0; font-weight: bold; }
-    .temp-hot { color: #fa0; font-weight: bold; }
-    .temp-danger { color: #c00; font-weight: bold; }
-    
-    /* V53.5: NIEUW - Energy color zones */
-    .energy-low { color: #999; }
-    .energy-ok { color: #0a0; }
-    .energy-high { color: #fa0; }
-    .energy-max { color: #c00; }
-    
-    /* V53.5: NIEUW - Trend indicators */
-    .trend { font-size: 18px; margin-left: 8px; display: inline-block; }
-    .trend-up { color: #c00; }
-    .trend-down { color: #0a0; }
-    .trend-stable { color: #999; }
+    .temp-cold{color:#0af;font-weight:bold}.temp-warm{color:#0a0;font-weight:bold}.temp-hot{color:#fa0;font-weight:bold}.temp-danger{color:#c00;font-weight:bold}
+    .energy-low{color:#999}.energy-ok{color:#0a0}.energy-high{color:#fa0}.energy-max{color:#c00}
+    .trend{font-size:18px;margin-left:8px;display:inline-block}.trend-up{color:#c00}.trend-down{color:#0a0}.trend-stable{color:#999}
     
     @media (max-width: 600px) {
       .container {flex-direction:column;}
@@ -1144,7 +1114,6 @@ String getMainPage() {
     <div class="header-right" id="header-time">)rawliteral" + String(uptime_sec) + " s &nbsp;&nbsp; " + getFormattedDateTime() + R"rawliteral(</div>
   </div>
   
-  <!-- V53.5: NIEUW - Status banner bovenaan! -->
   <div class="status-banner">
     <div class="status-label">STATUS:</div>
     <div class="status-message">)rawliteral" + pumpStatusMsg + R"rawliteral(</div>
@@ -1158,9 +1127,6 @@ String getMainPage() {
       <a href="/settings">Settings</a>
     </div>
     <div class="main">
-      <!-- V53.5: Refresh knop NIET meer bovenaan! Komt onderaan -->
-      
-      <div class="group-title">CONTROLLER STATUS</div>
       <table>
         <tr><td class="label">MCP23017</td><td class="value">)rawliteral" + String(mcp_available ? "Verbonden" : "Niet gevonden") + R"rawliteral(</td></tr>
         <tr><td class="label">WiFi</td><td class="value">)rawliteral" + WiFi.localIP().toString() + R"rawliteral(</td></tr>
@@ -1553,32 +1519,9 @@ h1{color:#369;}
   });
 
   server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request){
-    String sensorNamesHtml = "";
-    for (int i = 0; i < 6; i++) {
-      sensorNamesHtml += "<label style=\"display:block;margin:6px 0;\">Sensor " + String(i + 1) + ": ";
-      sensorNamesHtml += "<input type=\"text\" name=\"sensor_nick_" + String(i) + "\" value=\"" + sensor_nicknames[i] + "\" style=\"width:220px;\"></label>";
-    }
-    
-    String circuitsHtml = "";
-    for (int i = 0; i < circuits_num; i++) {
-      circuitsHtml += "<div style=\"background:#f5f5f5;border:1px solid #ccc;border-radius:8px;padding:15px;margin:15px 0;\">";
-      circuitsHtml += "<h4 style=\"margin:0 0 10px 0;color:#369;\">Circuit " + String(i + 1) + "</h4>";
-      circuitsHtml += "<table style=\"width:100%;\">";
-      circuitsHtml += "<tr><td style=\"width:35%;padding:8px;\">Naam</td><td><input type=\"text\" name=\"circuit_name_" + String(i) + "\" value=\"" + circuits[i].name + "\" style=\"width:100%;padding:8px;\"></td></tr>";
-      circuitsHtml += "<tr><td>IP adres</td><td><input type=\"text\" name=\"circuit_ip_" + String(i) + "\" value=\"" + circuits[i].ip + "\" style=\"width:100%;padding:8px;\"></td></tr>";
-      circuitsHtml += "<tr><td>mDNS naam</td><td><input type=\"text\" name=\"circuit_mdns_" + String(i) + "\" value=\"" + circuits[i].mdns + "\" style=\"width:100%;padding:8px;\" placeholder=\"ZONDER .local\"></td></tr>";
-      circuitsHtml += "<tr><td>Vermogen (kW)</td><td><input type=\"number\" step=\"0.001\" name=\"circuit_power_" + String(i) + "\" value=\"" + String(circuits[i].power_kw, 3) + "\" style=\"width:100%;padding:8px;\"></td></tr>";
-      circuitsHtml += "<tr><td>TSTAT</td><td><input type=\"checkbox\" name=\"circuit_tstat_" + String(i) + "\" value=\"1\"" + String(circuits[i].has_tstat ? " checked" : "") + "> ";
-      circuitsHtml += "Pin: <select name=\"circuit_tstat_pin_" + String(i) + "\" style=\"padding:8px;\">";
-      circuitsHtml += "<option value=\"255\"" + String(circuits[i].tstat_pin == 255 ? " selected" : "") + ">Geen</option>";
-      circuitsHtml += "<option value=\"10\"" + String(circuits[i].tstat_pin == 10 ? " selected" : "") + ">Pin 10</option>";
-      circuitsHtml += "<option value=\"11\"" + String(circuits[i].tstat_pin == 11 ? " selected" : "") + ">Pin 11</option>";
-      circuitsHtml += "<option value=\"12\"" + String(circuits[i].tstat_pin == 12 ? " selected" : "") + ">Pin 12</option>";
-      circuitsHtml += "</select></td></tr>";
-      circuitsHtml += "</table></div>";
-    }
-
-    String html = R"rawliteral(
+    String html;
+    html.reserve(10000);
+    html = R"rawliteral(
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>)rawliteral" + room_id + R"rawliteral( - Settings</title>
@@ -1593,8 +1536,6 @@ body{font-family:Arial,sans-serif;background:#fff;margin:0;padding:0;}
 .sidebar a:hover{background:#036;}
 .sidebar a.active{background:#c00;}
 .main{flex:1;padding:20px;overflow-y:auto;}
-h2{color:#369;border-bottom:2px solid #369;padding-bottom:10px;}
-.warning{background:#ffe6e6;border:2px solid #c00;padding:15px;margin:20px 0;border-radius:8px;text-align:center;font-weight:bold;color:#900;}
 table{width:100%;margin:15px 0;}
 td{padding:10px;}
 input,select{padding:8px;border:1px solid #ccc;border-radius:4px;}
@@ -1619,48 +1560,50 @@ input,select{padding:8px;border:1px solid #ccc;border-radius:4px;}
     <a href="/settings" class="active">Settings</a>
   </div>
   <div class="main">
-<div class="warning">OPGEPAST: Wijzigt permanente instellingen!<br>Verkeerde WiFi kan controller onbereikbaar maken!<br><br><strong>Geen WiFi?</strong> Controller start AP: HVAC-Setup<br>Ga naar http://192.168.4.1/settings</div>
-
 <form action="/save_settings" method="get">
   
-  <h2>WiFi Configuratie</h2>
   <table>
     <tr><td style="width:35%;">WiFi SSID</td><td><input type="text" name="wifi_ssid" value=")rawliteral" + wifi_ssid + R"rawliteral(" style="width:100%;"></td></tr>
     <tr><td>WiFi Password</td><td><input type="password" name="wifi_pass" value=")rawliteral" + wifi_pass + R"rawliteral(" style="width:100%;"></td></tr>
     <tr><td>Static IP</td><td><input type="text" name="static_ip" value=")rawliteral" + static_ip_str + R"rawliteral(" placeholder="leeg = DHCP" style="width:100%;"></td></tr>
-  </table>
-
-  <h2>Basis Instellingen</h2>
-  <table>
     <tr><td style="width:35%;">Room naam</td><td><input type="text" name="room_id" value=")rawliteral" + room_id + R"rawliteral(" required style="width:100%;"></td></tr>
     <tr><td>Aantal circuits</td><td><input type="number" name="circuits_num" min="1" max="16" value=")rawliteral" + String(circuits_num) + R"rawliteral(" style="width:100%;"></td></tr>
     <tr><td>Poll interval (sec)</td><td><input type="number" min="5" name="poll_interval" value=")rawliteral" + String(poll_interval) + R"rawliteral(" style="width:100%;"></td></tr>
-  </table>
-
-  <h2>ECO Boiler Instellingen</h2>
-  <table>
     <tr><td style="width:35%;">ECO IP adres</td><td><input type="text" name="eco_ip" value=")rawliteral" + eco_controller_ip + R"rawliteral(" style="width:100%;"></td></tr>
     <tr><td>ECO mDNS naam</td><td><input type="text" name="eco_mdns" value=")rawliteral" + eco_controller_mdns + R"rawliteral(" style="width:100%;"></td></tr>
     <tr><td>ECO Threshold (kWh)</td><td><input type="number" step="0.1" name="eco_thresh" value=")rawliteral" + String(eco_threshold) + R"rawliteral(" style="width:100%;"></td></tr>
     <tr><td>ECO Hysteresis (kWh)</td><td><input type="number" step="0.1" name="eco_hyst" value=")rawliteral" + String(eco_hysteresis) + R"rawliteral(" style="width:100%;"></td></tr>
     <tr><td>ECO Tmin - Stop (&deg;C)</td><td><input type="number" step="0.1" name="eco_min_temp" value=")rawliteral" + String(eco_min_temp) + R"rawliteral(" style="width:100%;"></td></tr>
     <tr><td>ECO Tmax - Start (&deg;C)</td><td><input type="number" step="0.1" name="eco_max_temp" value=")rawliteral" + String(eco_max_temp) + R"rawliteral(" style="width:100%;"></td></tr>
+    <tr><td style="width:35%;">Boiler ref temp (&deg;C)</td><td><input type="number" step="0.1" name="boiler_ref_temp" value=")rawliteral" + String(boiler_ref_temp) + R"rawliteral(" style="width:100%;"></td></tr>
+    <tr><td>Boiler vol/laag (L)</td><td><input type="number" step="1" name="boiler_volume" value=")rawliteral" + String(boiler_layer_volume) + R"rawliteral(" style="width:100%;"></td></tr>
   </table>
-
-  <h2>Boiler Qtot Berekening</h2>
-  <table>
-    <tr><td style="width:35%;">Reference temp (&deg;C)</td><td><input type="number" step="0.1" name="boiler_ref_temp" value=")rawliteral" + String(boiler_ref_temp) + R"rawliteral(" style="width:100%;"></td></tr>
-    <tr><td>Volume per laag (L)</td><td><input type="number" step="1" name="boiler_volume" value=")rawliteral" + String(boiler_layer_volume) + R"rawliteral(" style="width:100%;"></td></tr>
-  </table>
-
-  <h2>Sensor Nicknames</h2>
-  <div style="padding:10px;">)rawliteral" + sensorNamesHtml + R"rawliteral(</div>
-
-  <h2>Verwarmingscircuits</h2>
-  )rawliteral" + circuitsHtml + R"rawliteral(
-
+  <div style="padding:6px;">
+)rawliteral";
+    // Sensor nicknames — direct in html
+    for (int i = 0; i < 6; i++) {
+      html += "<label style=\"display:block;margin:4px 0;\">S" + String(i+1) + ": ";
+      html += "<input type=\"text\" name=\"sensor_nick_" + String(i) + "\" value=\"" + sensor_nicknames[i] + "\" style=\"width:220px;\"></label>";
+    }
+    html += "</div>";
+    // Circuits — direct in html
+    for (int i = 0; i < circuits_num; i++) {
+      html += "<div style=\"background:#369;color:#fff;padding:3px 8px;border-radius:4px;margin:10px 0 4px 0;font-weight:bold;font-size:13px;\">Circuit " + String(i+1) + "</div>";
+      html += "<table style=\"width:100%;margin:0 0 8px 0;\"><tr><td style=\"width:35%\">Naam</td><td><input type=\"text\" name=\"circuit_name_" + String(i) + "\" value=\"" + circuits[i].name + "\" style=\"width:100%\"></td></tr>";
+      html += "<tr><td>IP</td><td><input type=\"text\" name=\"circuit_ip_" + String(i) + "\" value=\"" + circuits[i].ip + "\" style=\"width:100%\"></td></tr>";
+      html += "<tr><td>mDNS</td><td><input type=\"text\" name=\"circuit_mdns_" + String(i) + "\" value=\"" + circuits[i].mdns + "\" style=\"width:100%\" placeholder=\"ZONDER .local\"></td></tr>";
+      html += "<tr><td>Vermogen (kW)</td><td><input type=\"number\" step=\"0.001\" name=\"circuit_power_" + String(i) + "\" value=\"" + String(circuits[i].power_kw, 3) + "\" style=\"width:100%\"></td></tr>";
+      html += "<tr><td>TSTAT</td><td><input type=\"checkbox\" name=\"circuit_tstat_" + String(i) + "\" value=\"1\"" + String(circuits[i].has_tstat ? " checked" : "") + "> ";
+      html += "Pin: <select name=\"circuit_tstat_pin_" + String(i) + "\">";
+      html += "<option value=\"255\"" + String(circuits[i].tstat_pin == 255 ? " selected" : "") + ">Geen</option>";
+      html += "<option value=\"10\"" + String(circuits[i].tstat_pin == 10 ? " selected" : "") + ">10</option>";
+      html += "<option value=\"11\"" + String(circuits[i].tstat_pin == 11 ? " selected" : "") + ">11</option>";
+      html += "<option value=\"12\"" + String(circuits[i].tstat_pin == 12 ? " selected" : "") + ">12</option>";
+      html += "</select></td></tr></table>";
+    }
+    html += R"rawliteral(
   <div style="text-align:center;">
-    <button type="submit" class="btn">Opslaan & Reboot</button>
+    <button type="submit" class="btn">Opslaan &amp; Reboot</button>
     <a href="/" class="btn" style="display:inline-block;text-decoration:none;background:#c00;">Annuleren</a>
   </div>
 </form>
