@@ -2,7 +2,15 @@
 Transition from Photon based to ESP32 based Home automation system. Developed together with ChatGPT & Grok in januari '26.
 Thuis bereikbaar op http://hvac.local of static IP http://192.168.0.70 => Andere controller: Naam (sectie DNS/MDNS) + static IP aanpassen!
 
-1mar26 16:54  Version v 1.3: Matter integrated
+OPGEPAST: Compileer met "partitions.csv" in de sketchfolder:
+# Name,   Type, SubType, Offset,   Size,    Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x600000,
+app1,     app,  ota_1,   0x610000, 0x600000,
+spiffs,   data, spiffs,  0xC10000, 0x3F0000,
+
+2mar26 16:54  Version v 1.4: Matter integrated, nvs correcties
 26feb26 17:30 Version v 1.2: Static IP setting geactiveerd: Gebruik: 192.168.0.70 (zie tabel)
 10jan26 08:30 Version v 1.1: UI & JSON Improvements
 
@@ -37,6 +45,7 @@ To do Later:
 #include <ArduinoJson.h>
 #include <time.h>
 #include <nvs.h>
+#include <nvs_flash.h>
 #include <Matter.h>
 #include <MatterEndPoints/MatterTemperatureSensor.h>
 #include <MatterEndPoints/MatterOnOffPlugin.h>
