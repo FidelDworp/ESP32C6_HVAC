@@ -10,6 +10,7 @@ app0,     app,  ota_0,   0x10000,  0x600000,
 app1,     app,  ota_1,   0x610000, 0x600000,
 spiffs,   data, spiffs,  0xC10000, 0x3F0000,
 
+4mar26        Version v 1.7: Ventilatie PWM output gefixed
 3mar26        Version v 1.6: /matter pagina toegevoegd, serial R-reset gefixed, boot-tekst opgeruimd
 2mar26 16:54  Version v 1.4: Matter integrated, nvs correcties
 1mar26 16:54  Version v 1.3: Matter integrated
@@ -19,7 +20,6 @@ spiffs,   data, spiffs,  0xC10000, 0x3F0000,
 To do Later:
 - mDNS verbeteren! (werkt niet 100% betrouwbaar)
 */
-
 
 // ============== DEEL 1/5: HEADERS, STRUCTS & HELPER FUNCTIES ==============
 
@@ -896,9 +896,10 @@ void pollRooms() {
   }
   
   Serial.printf("Total power: %.2f kW, Vent: %d%%\n", total_power, vent_percent);
-  int pwm_value = map(vent_percent, 0, 100, 0, 255);
-  analogWrite(VENT_FAN_PIN, pwm_value);
-  Serial.printf("Vent PWM: %d/255 (%d%%)\n", pwm_value, vent_percent);
+  int effective_vent = vent_override_active ? vent_override_percent : vent_percent;
+  int pwm_value = map(effective_vent, 0, 100, 0, 255);
+  ledcWrite(VENT_FAN_PIN, pwm_value);
+  Serial.printf("Vent PWM: %d/255 (%d%% effectief, override=%s)\n", pwm_value, effective_vent, vent_override_active ? "JA" : "NEE");
   checkPumpFeedback(total_power);
 }
 
@@ -1043,7 +1044,7 @@ String getMainPage() {
     .header {display:flex;background:#ffcc00;color:#000;padding:10px 15px;font-size:18px;font-weight:bold;align-items:center;}
     .header-left {flex:1;}
     .header-right {flex:1;text-align:right;font-size:15px;}
-    
+    .slider {width:150px;height:28px;vertical-align:middle;}
     .status-banner{background:#336699;color:#fff;padding:10px 15px;display:flex;align-items:center;border-bottom:3px solid #ffcc00;font-size:14px;}
     .status-label{font-weight:bold;margin-right:8px;}
     .status-message{flex:1;}
@@ -1295,7 +1296,19 @@ String getMainPage() {
 
       <div class="group-title">VENTILATIE</div>
       <table>
-        <tr><td class="label">Max request</td><td class="value">)rawliteral" + String(vent_percent) + " %" + R"rawliteral(</td></tr>
+        <tr><td class="label">Auto (rooms)</td><td class="value">)rawliteral" + String(vent_percent) + " %" + R"rawliteral(</td><td class="value"></td></tr>
+        <tr><td class="label">Override</td>
+          <td class="value" id="vent-val">)rawliteral" + String(vent_override_active ? vent_override_percent : 0) + " %" + R"rawliteral(</td>
+          <td class="value">
+            <input type="range" class="slider" id="vent-slider" min="0" max="100"
+              value=")rawliteral" + String(vent_override_active ? vent_override_percent : 0) + R"rawliteral("
+              oninput="document.getElementById('vent-val').textContent=this.value+' %';"
+              onchange="fetch('/set_vent?vent='+this.value).then(()=>setTimeout(()=>location.reload(),500));">
+          </td>
+        </tr>
+        <tr><td class="label" colspan="3" style="font-size:11px;color:#999;">
+          )rawliteral" + String(vent_override_active ? "Override actief — vervalt na 3u inactiviteit" : "Slider op 0 = auto") + R"rawliteral(
+        </td></tr>
       </table>
 
       <div class="section-divider"></div>
@@ -1855,6 +1868,26 @@ input,select{padding:8px;border:1px solid #ccc;border-radius:4px;}
     request->send(200, "text/plain", "OK");
   });
 
+  // Ventilatie manuele override via UI slider
+  server.on("/set_vent", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (request->hasParam("vent")) {
+      int pct = constrain(request->getParam("vent")->value().toInt(), 0, 100);
+      if (pct == 0) {
+        vent_override_active  = false;
+        vent_override_percent = 0;
+        ledcWrite(VENT_FAN_PIN, 0);
+        Serial.println("[UI] Vent override uitgeschakeld → auto");
+      } else {
+        vent_override_start   = millis();
+        vent_override_active  = true;
+        vent_override_percent = pct;
+        ledcWrite(VENT_FAN_PIN, map(pct, 0, 100, 0, 255));
+        Serial.printf("[UI] Vent override → %d%%\n", pct);
+      }
+    }
+    request->send(200, "text/plain", "OK");
+  });
+
   server.begin();
 }
 
@@ -1867,6 +1900,7 @@ void check_vent_override() {
       millis() - vent_override_start > VENT_OVERRIDE_DURATION) {
     vent_override_active  = false;
     vent_override_percent = 0;
+    ledcWrite(VENT_FAN_PIN, 0);  // Override vervallen → pin direct naar 0
     Serial.println(F("[OVERRIDE] Ventilatie — vervallen na 3u, terug naar auto"));
   }
 }
@@ -1951,6 +1985,10 @@ void setup() {
     delay(10);
   }
   Serial.println("(geen reset)");
+
+  // Ventilatie PWM output (ESP32-C6: ledcAttach ipv analogWrite)
+  ledcAttach(VENT_FAN_PIN, 1000, 8);  // pin, 1kHz, 8-bit (0-255)
+  ledcWrite(VENT_FAN_PIN, 0);          // Start op 0%
 
   // I2C & MCP23017
   Wire.begin(I2C_SDA, I2C_SCL);
@@ -2211,11 +2249,13 @@ void setup() {
       if (new_pct == 0) {
         vent_override_active  = false;
         vent_override_percent = 0;
+        ledcWrite(VENT_FAN_PIN, 0);  // Direct naar pin
         Serial.println(F("[HomeKit] Vent speed = 0% → terug naar auto"));
       } else {
-        vent_override_start   = millis();  // EERST
-        vent_override_active  = true;      // DAN
+        vent_override_start   = millis();
+        vent_override_active  = true;
         vent_override_percent = new_pct;
+        ledcWrite(VENT_FAN_PIN, map(new_pct, 0, 100, 0, 255));  // Direct naar pin
         Serial.printf("[HomeKit] Vent speed override → %d%%\n", new_pct);
       }
       return true;
