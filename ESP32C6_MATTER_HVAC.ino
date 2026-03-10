@@ -10,6 +10,7 @@ app0,     app,  ota_0,   0x10000,  0x600000,
 app1,     app,  ota_1,   0x610000, 0x600000,
 spiffs,   data, spiffs,  0xC10000, 0x3F0000,
 
+10mar26 23:00 Version v 1.8: JSON string adapted : Uptime added for Google sheets
 4mar26        Version v 1.7: Ventilatie PWM output gefixed
 3mar26        Version v 1.6: /matter pagina toegevoegd, serial R-reset gefixed, boot-tekst opgeruimd
 2mar26 16:54  Version v 1.4: Matter integrated, nvs correcties
@@ -921,6 +922,7 @@ String getWifiScanJson() {
 String getLogData() {
   DynamicJsonDocument doc(2048);
   
+  doc["uptime"]     = uptime_sec;
   doc["eco_online"] = eco_boiler.online ? 1 : 0;
   
   doc["KSTopH"] = sch_temps[0];
