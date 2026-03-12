@@ -4,8 +4,12 @@ Thuis bereikbaar op static IP http://192.168.0.70  (mDNS verwijderd — conflict
 
 Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
 
+12mar26       Version v 1.10: Nuclear Matter reset (nvs_flash_erase+restore, 100% betrouwbaar, settings intact),
+              /settings hybrid (static shell + circuits via /json_settings + JS), heap-diagnose log bij boot.
+12mar26       Version v 1.9: uptime toegevoegd aan /json, Circuit struct String→char[] (48 heap-allocs weg),
+              circuits[16]→circuits[7], hybrid hoofdpagina (statische shell + circuits-tabel via JS/fetch /json).
 12mar26       Version v 1.8: Matter 14→11 endpoints (boiler_mid + 2 fake-sensoren weg, ~10KB heap),
-              getMainPage() + /settings chunked streaming via AsyncResponseStream (2× reserve(10000) weg, ~20KB piek),
+              getMainPage() + /settings chunked streaming via AsyncResponseStream (2× reserve(10000) weg),
               getLogData DynamicJson→StaticJson.
 11mar26       Version v 1.7: #define Serial Serial0 (C6 fix), CONVERT_ALL DS18B20 (WDT crash fix: 4.5s→750ms),
               interval 2s→60s, DynamicJson→StaticJson in pollRooms/pollEcoBoiler/getWifi,
@@ -81,9 +85,10 @@ const char* NVS_TOTAL_WON_KWH = "tot_won_kwh";
 
 // Structs
 struct Circuit {
-  String name;
-  String ip;
-  String mdns;
+  // v1.9: char[] i.p.v. String — elimineer 3 heap-allocs per circuit (was 48 totaal voor circuits[16])
+  char name[32];
+  char ip[20];
+  char mdns[32];
   float power_kw;
   bool has_tstat;
   int tstat_pin;
@@ -125,7 +130,7 @@ String wifi_pass = "";
 String static_ip_str = "";
 IPAddress static_ip;
 int circuits_num = 7;
-Circuit circuits[16];
+Circuit circuits[7];  // v1.9: was [16] — 9 lege slots = 27 onnodige heap-allocs
 String sensor_nicknames[6];
 float eco_threshold = 15.0;  // V53.5: Updated default
 float eco_hysteresis = 5.0;  // V53.5: Updated default
@@ -150,8 +155,9 @@ unsigned long vent_override_start    = 0;
 const unsigned long VENT_OVERRIDE_DURATION = 180UL * 60UL * 1000UL;  // 3 uur
 
 // Matter flags (zelfde principe als HVAC_SIM)
-bool ignore_callbacks     = false;
-bool alles_auto_requested = false;
+bool ignore_callbacks       = false;
+bool alles_auto_requested   = false;
+bool matter_nuclear_reset_requested = false;  // v1.10: flag voor main-loop nuclear reset
 unsigned long last_matter_update = 0;
 
 // =============================================================================
@@ -777,21 +783,21 @@ void pollRooms() {
       }
 
       // ── HTTP polling ─────────────────────────────────────────────────────────
-      if (circuits[i].ip.length() > 0 || circuits[i].mdns.length() > 0) {
+      if (strlen(circuits[i].ip) > 0 || strlen(circuits[i].mdns) > 0) {
         WiFiClient client;
         HTTPClient http;
         String url;
         bool url_ok = false;
 
-        if (circuits[i].ip.length() > 0) {
-          url = "http://" + circuits[i].ip + "/json";
+        if (strlen(circuits[i].ip) > 0) {
+          url = "http://" + String(circuits[i].ip) + "/json";
           Serial.printf("c%d: Polling %s\n    ", i, url.c_str());
           url_ok = true;
         } else {
           // v1.7 FIX 7: goto decision_logic vervangen door url_ok vlag
-          Serial.printf("c%d: Resolving %s.local ... ", i, circuits[i].mdns.c_str());
+          Serial.printf("c%d: Resolving %s.local ... ", i, circuits[i].mdns);
           IPAddress resolvedIP;
-          if (WiFi.hostByName((circuits[i].mdns + ".local").c_str(), resolvedIP)) {
+          if (WiFi.hostByName((String(circuits[i].mdns) + ".local").c_str(), resolvedIP)) {
             if (resolvedIP.toString() == "0.0.0.0" || resolvedIP[0] == 0) {
               Serial.printf("FAILED (host not found)\n");
               circuits[i].online = false;
@@ -938,8 +944,9 @@ String getWifiScanJson() {
 
 // V53.5: JSON met pump_status toegevoegd
 String getLogData() {
-  // v1.8: StaticJsonDocument (stack) — was nog DynamicJsonDocument(2048) op heap
-  StaticJsonDocument<2048> doc;
+  // v1.9: 4096 i.p.v. 2048 — circuits array toegevoegd (7 × ~15 velden)
+  // StaticJsonDocument op stack: veilig voor éénmalige aanroep, geen heap-alloc
+  StaticJsonDocument<4096> doc;
   
   doc["eco_online"] = eco_boiler.online ? 1 : 0;
   
@@ -1006,7 +1013,42 @@ String getLogData() {
   String pumpStatus = getPumpStatusMessage();
   pumpStatus.replace("\"", "\\\"");  // Escape quotes
   doc["pump_status"] = pumpStatus;
-  
+
+  // v1.9: uptime was absent sinds v1.7
+  doc["uptime"] = uptime_sec;
+
+  // v1.9: circuits array voor hybrid UI — JS laadt de tabel via fetch('/json')
+  JsonArray jc = doc.createNestedArray("circuits");
+  for (int i = 0; i < circuits_num; i++) {
+    JsonObject c = jc.createNestedObject();
+    c["name"]    = circuits[i].name;
+    c["ip"]      = strlen(circuits[i].ip)   > 0 ? circuits[i].ip   : nullptr;
+    c["mdns"]    = strlen(circuits[i].mdns) > 0 ? circuits[i].mdns : nullptr;
+    c["online"]  = circuits[i].online;
+    c["setpoint"]   = circuits[i].setpoint;
+    c["room_temp"]  = circuits[i].room_temp;
+    c["heat_request"] = circuits[i].heat_request;
+    c["home_status"]  = circuits[i].home_status;
+    c["heating_on"]   = circuits[i].heating_on;
+    c["power_kw"]     = circuits[i].power_kw;
+    c["duty_cycle"]   = circuits[i].duty_cycle;
+    c["vent_request"] = circuits[i].vent_request;
+    c["override_active"] = circuits[i].override_active;
+    c["override_state"]  = circuits[i].override_state;
+    // Override resterende seconden — berekend server-side
+    if (circuits[i].override_active) {
+      unsigned long elapsed = millis() - circuits[i].override_start;
+      c["override_remaining"] = elapsed < 600000UL ? (int)((600000UL - elapsed) / 1000) : 0;
+    } else {
+      c["override_remaining"] = 0;
+    }
+    // TSTAT status
+    if (circuits[i].has_tstat && mcp_available && circuits[i].tstat_pin < 13)
+      c["tstat"] = (mcp.digitalRead(circuits[i].tstat_pin) == LOW) ? "ON" : "OFF";
+    else
+      c["tstat"] = nullptr;
+  }
+
   String json;
   serializeJson(doc, json);
   return json;
@@ -1073,8 +1115,7 @@ void streamMainPage(AsyncWebServerRequest* request) {
     ".sidebar a:hover{background:#036;}.sidebar a.active{background:#c00;}"
     ".main{flex:1;padding:15px;overflow-y:auto;}"
     ".group-title{font-size:17px;font-style:italic;font-weight:bold;color:#fff;background:#336699;padding:8px 12px;margin:20px 0 8px 0;border-radius:4px;}"
-    ".section-divider{border-top:2px solid #ccc;margin:15px 0;}"
-    ".blue-divider{border-top:3px solid #336699;margin:25px 0;}"
+    ".section-divider{border-top:1px solid #eee;margin:10px 0;}"
     ".refresh-btn{background:#369;color:#fff;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:bold;margin:20px 0;width:100%;max-width:300px;}"
     ".refresh-btn:hover{background:#036;}"
     "table{width:100%;border-collapse:collapse;margin-bottom:15px;}"
@@ -1086,7 +1127,7 @@ void streamMainPage(AsyncWebServerRequest* request) {
     ".eco-online{background:#0a0;color:#fff;}.eco-offline{background:#c00;color:#fff;}"
     ".pump-info{font-size:11px;color:#666;font-style:italic;margin-top:5px;text-align:center;}"
     ".pump-total{font-size:12px;color:#369;font-weight:bold;margin-top:3px;text-align:center;}"
-    ".circuits-table-wrapper{overflow-x:auto;-webkit-overflow-scrolling:touch;border:2px solid #ddd;border-radius:8px;margin:15px 0;}"
+    ".circuits-table-wrapper{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:15px 0;}"
     "table.circuits-table{min-width:1400px;}"
     ".btn-override{padding:4px 8px;margin:2px;font-size:11px;cursor:pointer;border:none;border-radius:4px;background:#369;color:#fff;}"
     ".btn-override:hover{background:#036;}.btn-override-cancel{background:#c00;}.btn-override-cancel:hover{background:#900;}"
@@ -1116,23 +1157,7 @@ void streamMainPage(AsyncWebServerRequest* request) {
     "<a href='/settings'>Settings</a>"
     "</div><div class='main'>"));
 
-  // Chunk 3 — systeeminfo tabel met heap (~0.4 KB)
-  p->print(F("<table>"
-    "<tr><td class='label'>MCP23017</td><td class='value'>"));
-  p->print(mcp_available ? F("Verbonden") : F("Niet gevonden"));
-  p->print(F("</td></tr><tr><td class='label'>WiFi</td><td class='value'>"));
-  p->print(WiFi.localIP().toString());
-  p->print(F("</td></tr><tr><td class='label'>WiFi RSSI</td><td class='value'>"));
-  p->print(WiFi.RSSI());
-  p->print(F(" dBm</td></tr><tr><td class='label'>Free heap</td><td class='value'>"));
-  p->print((ESP.getFreeHeap() * 100) / ESP.getHeapSize());
-  p->print(F(" %</td></tr><tr><td class='label'>Heap largest block</td><td class='value'><b style='color:"));
-  p->print(lb_color);
-  p->print(F("'>"));
-  p->print(lb / 1024);
-  p->print(F(" KB — "));
-  p->print(lb_label);
-  p->print(F("</b></td></tr></table><div class='section-divider'></div>"));
+  // Chunk 3 — STATUS tabel is verplaatst naar onderaan de pagina
 
   // Chunk 4 — SCH boiler sensoren (~0.5 KB)
   p->print(F("<div class='group-title'>SCH BOILER (Warmtepomp schuur)</div>"
@@ -1151,7 +1176,7 @@ void streamMainPage(AsyncWebServerRequest* request) {
   p->print(F("</table><table><tr><td class='label'>Energieinhoud (QTot)</td>"
     "<td class='value'><b>"));
   p->print(sch_qtot, 2);
-  p->print(F(" kWh</b></td></tr></table><div class='blue-divider'></div>"));
+  p->print(F(" kWh</b></td></tr></table>"));
 
   // Chunk 5 — ECO boiler (~0.5 KB)
   p->print(F("<div class='group-title'>ECO BOILER (Solar + Haarden) <span class='eco-status-badge "));
@@ -1214,10 +1239,7 @@ void streamMainPage(AsyncWebServerRequest* request) {
     p->print(F(" - ")); p->print(last_won_pump.kwh_pumped, 2); p->print(F(" kWh</div>"));
   } else p->print(F("<div class='pump-info'>Laatste: NA</div>"));
   p->print(F("<div class='pump-total'>TOTAAL: ")); p->print(total_won_kwh, 1);
-  p->print(F(" kWh</div></td></tr></table>"));
-
-  // Chunk 8 — Ventilatie (~0.3 KB)
-  p->print(F("<div class='section-divider'></div>"
+  p->print(F(" kWh</div></td></tr></table>"
     "<div class='group-title'>VENTILATIE</div><table>"
     "<tr><td class='label'>Auto (rooms)</td><td class='value'>"));
   p->print(vent_percent);
@@ -1231,66 +1253,38 @@ void streamMainPage(AsyncWebServerRequest* request) {
     " onchange=\"fetch('/set_vent?vent='+this.value).then(()=>setTimeout(()=>location.reload(),500));\">"
     "</td></tr><tr><td class='label' colspan='3' style='font-size:11px;color:#999;'>"));
   p->print(vent_override_active ? F("Override actief — vervalt na 3u") : F("Slider op 0 = auto"));
-  p->print(F("</td></tr></table>"
-    "<div class='section-divider'></div>"
-    "<div class='group-title'>CIRCUITS</div>"
-    "<div class='circuits-table-wrapper'><table class='circuits-table'>"
+  p->print(F("</td></tr></table>"));
+
+  // Chunk 9 — Circuits-tabel via JS fetch('/json') — nooit meer onvolledig door heap-druk
+  // De statische HTML-shell (~2KB) laadt altijd volledig. JS vult de tabel na onload.
+  // Override-timers worden ook client-side bijgehouden via setInterval.
+  p->print(F("<div class='group-title'>CIRCUITS</div>"
+    "<div class='circuits-table-wrapper'>"
+    "<table class='circuits-table'>"
     "<tr class='header-row'><td>#</td><td>Naam</td><td>IP</td><td>mDNS</td>"
     "<td>Set</td><td>Temp</td><td>Heat</td><td>Home</td>"
-    "<td>TSTAT</td><td>Pomp</td><td>P</td><td>Duty</td><td>Vent</td><td>Override</td></tr>"));
-
-  // Chunk 9 — circuit rijen, één per keer (~0.25 KB per rij × 7 = ~1.7 KB)
-  for (int i = 0; i < circuits_num; i++) {
-    p->print(circuits[i].override_active ? F("<tr class='override-active'>") : F("<tr>"));
-    p->print(F("<td class='label'>")); p->print(i + 1); p->print(F("</td>"));
-    p->print(F("<td class='value'>")); p->print(circuits[i].name); p->print(F("</td>"));
-    const char* oc = circuits[i].online ? "status-ok" : "status-na";
-    p->print(F("<td class='value ")); p->print(oc); p->print(F("'>"));
-    p->print(circuits[i].ip.length()   > 0 ? (circuits[i].online ? F("&#10003;") : F("&#10007;")) : F("-"));
-    p->print(F("</td><td class='value ")); p->print(oc); p->print(F("'>"));
-    p->print(circuits[i].mdns.length() > 0 ? (circuits[i].online ? F("&#10003;") : F("&#10007;")) : F("-"));
-    p->print(F("</td><td class='value'>"));
-    if (circuits[i].online && circuits[i].setpoint > 0) { p->print(circuits[i].setpoint); p->print(F("&deg;C")); } else p->print(F("--"));
-    p->print(F("</td><td class='value'>"));
-    if (circuits[i].online && circuits[i].room_temp > 0) { p->print(circuits[i].room_temp, 1); p->print(F("&deg;C")); } else p->print(F("--"));
-    p->print(F("</td><td class='value'>"));
-    p->print(circuits[i].online ? (circuits[i].heat_request ? F("ON") : F("OFF")) : F("--"));
-    p->print(F("</td><td class='value "));
-    if (circuits[i].online) { p->print(circuits[i].home_status == 1 ? F("status-ok'>Thuis") : F("status-away'>Away")); }
-    else p->print(F("status-na'>NA"));
-    p->print(F("</td><td class='value'>"));
-    if (circuits[i].has_tstat && mcp_available && circuits[i].tstat_pin < 13)
-      p->print((mcp.digitalRead(circuits[i].tstat_pin) == LOW) ? F("ON") : F("OFF"));
-    else p->print(F("-"));
-    p->print(F("</td><td class='value'>"));
-    p->print(circuits[i].heating_on ? F("<b>AAN</b>") : F("UIT"));
-    p->print(F("</td><td class='value'>"));
-    if (circuits[i].heating_on) { p->print(circuits[i].power_kw, 1); p->print(F(" kW")); } else p->print(F("0 kW"));
-    p->print(F("</td><td class='value'>"));  p->print(circuits[i].duty_cycle, 1); p->print(F("%</td>"));
-    p->print(F("<td class='value'>")); p->print(circuits[i].vent_request); p->print(F("%</td>"));
-    p->print(F("<td class='value'>"));
-    if (circuits[i].override_active) {
-      unsigned long rem = (600000UL - (millis() - circuits[i].override_start)) / 1000;
-      p->print(F("<span class='override-badge timer' data-remaining='")); p->print(rem); p->print(F("'>"));
-      p->print(circuits[i].override_state ? F("ON ") : F("OFF ")); p->print(rem/60); p->print(F(":")); p->print(rem%60);
-      p->print(F("</span> <button class='btn-override btn-override-cancel' onclick='cancelOverride("));
-      p->print(i); p->print(F(")'>&#215;</button>"));
-    } else {
-      p->print(F("<button class='btn-override' onclick='setOverride(")); p->print(i); p->print(F(",true)'>ON</button> "));
-      p->print(F("<button class='btn-override' onclick='setOverride(")); p->print(i); p->print(F(",false)'>OFF</button>"));
-    }
-    p->print(F("</td></tr>"));
-  }
-
-  // Chunk 10 — totaalrij, script, sluiting (~0.5 KB)
-  p->print(F("<tr style='border-top:2px solid #369;'>"
-    "<td colspan='9' class='label'><b>TOTAAL</b></td>"
-    "<td class='value'></td><td class='value'><b>"));
-  p->print(total_power_local, 1);
-  p->print(F(" kW</b></td><td colspan='3' class='value'><b>"));
-  p->print(vent_percent);
-  p->print(F(" %</b></td></tr></table></div>"
-    "<button class='refresh-btn' onclick='refreshData()'>&#128260; Refresh Data</button>"
+    "<td>TSTAT</td><td>Pomp</td><td>P</td><td>Duty</td><td>Vent</td><td>Override</td></tr>"
+    "<tbody id='ct'><tr><td colspan='14' style='text-align:center;padding:12px;color:#999;'>"
+    "Laden...</td></tr></tbody>"
+    "</table></div>"
+    "<div class='group-title'>STATUS</div>"));
+  p->print(F("<table>"
+    "<tr><td class='label'>MCP23017</td><td class='value'>"));
+  p->print(mcp_available ? F("Verbonden") : F("Niet gevonden"));
+  p->print(F("</td></tr><tr><td class='label'>WiFi</td><td class='value'>"));
+  p->print(WiFi.localIP().toString());
+  p->print(F("</td></tr><tr><td class='label'>WiFi RSSI</td><td class='value'>"));
+  p->print(WiFi.RSSI());
+  p->print(F(" dBm</td></tr><tr><td class='label'>Free heap</td><td class='value'>"));
+  p->print((ESP.getFreeHeap() * 100) / ESP.getHeapSize());
+  p->print(F(" %</td></tr><tr><td class='label'>Heap largest block</td><td class='value'><b style='color:"));
+  p->print(lb_color);
+  p->print(F("'>"));
+  p->print(lb / 1024);
+  p->print(F(" KB — "));
+  p->print(lb_label);
+  p->print(F("</b></td></tr></table>"));
+  p->print(F("<button class='refresh-btn' onclick='refreshData()'>&#128260; Refresh Data</button>"
     "</div></div>"
     "<script>"
     "function setPump(t,s){fetch(t==='sch'?(s?'/pump_sch_on':'/pump_sch_off'):(s?'/pump_won_on':'/pump_won_off')).then(()=>setTimeout(()=>location.reload(),500));}"
@@ -1298,6 +1292,7 @@ void streamMainPage(AsyncWebServerRequest* request) {
     "function setOverride(c,s){fetch((s?'/circuit_override_on':'/circuit_override_off')+'?circuit='+c).then(()=>setTimeout(()=>location.reload(),500));}"
     "function cancelOverride(c){fetch('/circuit_override_cancel?circuit='+c).then(()=>setTimeout(()=>location.reload(),500));}"
     "function refreshData(){location.reload();}"
+    // Timer countdown
     "setInterval(()=>{"
       "document.querySelectorAll('.timer').forEach(b=>{"
         "let r=parseInt(b.dataset.remaining);"
@@ -1306,6 +1301,57 @@ void streamMainPage(AsyncWebServerRequest* request) {
         "else if(r===0)setTimeout(()=>location.reload(),1000);"
       "});"
     "},1000);"
+    // Circuits tabel via /json
+    "function loadCircuits(){"
+      "fetch('/json').then(r=>r.json()).then(d=>{"
+        "const circ=d.circuits;"
+        "if(!circ||!circ.length){document.getElementById('ct').innerHTML="
+          "'<tr><td colspan=14 style=\"text-align:center;color:#c00;\">Geen data</td></tr>';return;}"
+        "let h='';"
+        "let tot_p=0;"
+        "circ.forEach((c,i)=>{"
+          "const oc=c.online?'status-ok':'status-na';"
+          "const rc=c.override_active?'override-active':'';"
+          "h+=`<tr class='${rc}'>`;"
+          "h+=`<td class='label'>${i+1}</td>`;"
+          "h+=`<td class='value'>${c.name}</td>`;"
+          "h+=`<td class='value ${oc}'>${c.ip?(c.online?'&#10003;':'&#10007;'):'-'}</td>`;"
+          "h+=`<td class='value ${oc}'>${c.mdns?(c.online?'&#10003;':'&#10007;'):'-'}</td>`;"
+          "h+=`<td class='value'>${c.online&&c.setpoint>0?c.setpoint+'&deg;C':'--'}</td>`;"
+          "h+=`<td class='value'>${c.online&&c.room_temp>0?c.room_temp.toFixed(1)+'&deg;C':'--'}</td>`;"
+          "h+=`<td class='value'>${c.online?(c.heat_request?'ON':'OFF'):'--'}</td>`;"
+          "h+=`<td class='value ${c.online?(c.home_status===1?'status-ok':'status-away'):'status-na'}'>`;"
+          "h+=`${c.online?(c.home_status===1?'Thuis':'Away'):'NA'}</td>`;"
+          "h+=`<td class='value'>${c.tstat??'-'}</td>`;"
+          "h+=`<td class='value'>${c.heating_on?'<b>AAN</b>':'UIT'}</td>`;"
+          "h+=`<td class='value'>${c.heating_on?c.power_kw.toFixed(1)+' kW':'0 kW'}</td>`;"
+          "h+=`<td class='value'>${c.duty_cycle.toFixed(1)}%</td>`;"
+          "h+=`<td class='value'>${c.vent_request}%</td>`;"
+          "h+='<td class=\"value\">';"
+          "if(c.override_active){"
+            "const rem=c.override_remaining??0;"
+            "h+=`<span class='override-badge timer' data-remaining='${rem}'>`;"
+            "h+=`${c.override_state?'ON':'OFF'} ${Math.floor(rem/60)}:${String(rem%60).padStart(2,'0')}</span> `;"
+            "h+=`<button class='btn-override btn-override-cancel' onclick='cancelOverride(${i})'>&#215;</button>`;"
+          "}else{"
+            "h+=`<button class='btn-override' onclick='setOverride(${i},true)'>ON</button> `;"
+            "h+=`<button class='btn-override' onclick='setOverride(${i},false)'>OFF</button>`;"
+          "}"
+          "h+='</td></tr>';"
+          "if(c.heating_on)tot_p+=c.power_kw;"
+        "});"
+        "h+=`<tr style='border-top:2px solid #369;'>`;"
+        "h+=`<td colspan='9' class='label'><b>TOTAAL</b></td>`;"
+        "h+=`<td class='value'></td>`;"
+        "h+=`<td class='value'><b>${tot_p.toFixed(1)} kW</b></td>`;"
+        "h+=`<td colspan='3' class='value'><b>${d.Vent??0} %</b></td></tr>`;"
+        "document.getElementById('ct').innerHTML=h;"
+      "}).catch(()=>{"
+        "document.getElementById('ct').innerHTML="
+          "'<tr><td colspan=14 style=\"text-align:center;color:#c00;\">Fout bij laden</td></tr>';"
+      "});"
+    "}"
+    "loadCircuits();"
     "</script></body></html>"));
 
   request->send(p);
@@ -1345,6 +1391,40 @@ void setupWebServer() {
 
   server.on("/json", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "application/json", getLogData());
+  });
+
+  // v1.10: /json_settings — circuit-config als JSON voor hybrid /settings pagina
+  server.on("/json_settings", HTTP_GET, [](AsyncWebServerRequest *request){
+    StaticJsonDocument<2048> doc;
+    doc["room_id"]        = room_id;
+    doc["wifi_ssid"]      = wifi_ssid;
+    doc["wifi_pass"]      = wifi_pass;
+    doc["static_ip"]      = static_ip_str;
+    doc["circuits_num"]   = circuits_num;
+    doc["poll_interval"]  = poll_interval;
+    doc["eco_ip"]         = eco_controller_ip;
+    doc["eco_mdns"]       = eco_controller_mdns;
+    doc["eco_threshold"]  = eco_threshold;
+    doc["eco_hysteresis"] = eco_hysteresis;
+    doc["eco_min_temp"]   = eco_min_temp;
+    doc["eco_max_temp"]   = eco_max_temp;
+    doc["boiler_ref_temp"]    = boiler_ref_temp;
+    doc["boiler_layer_volume"] = boiler_layer_volume;
+    JsonArray nicks = doc.createNestedArray("sensor_nicknames");
+    for (int i = 0; i < 6; i++) nicks.add(sensor_nicknames[i]);
+    JsonArray circs = doc.createNestedArray("circuits");
+    for (int i = 0; i < circuits_num; i++) {
+      JsonObject c = circs.createNestedObject();
+      c["name"]     = circuits[i].name;
+      c["ip"]       = circuits[i].ip;
+      c["mdns"]     = circuits[i].mdns;
+      c["power_kw"] = circuits[i].power_kw;
+      c["has_tstat"]= circuits[i].has_tstat;
+      c["tstat_pin"]= circuits[i].tstat_pin;
+    }
+    String json;
+    serializeJson(doc, json);
+    request->send(200, "application/json", json);
   });
 
   server.on("/scan", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -1460,23 +1540,22 @@ body{font-family:Arial,sans-serif;background:#fff;margin:0;padding:0;}
     request->send(200, "text/html; charset=utf-8", html);
   });
 
+  // v1.10: Nuclear reset via flag — handler zet alleen flag, main loop voert uit
+  // Reden: nvs_flash_erase() vanuit async-task kan racen met Matter-stack NVS-writes
   server.on("/matter_reset", HTTP_GET, [](AsyncWebServerRequest *request) {
+    matter_nuclear_reset_requested = true;
     request->send(200, "text/html",
-      "<h2 style='text-align:center;padding:40px;color:#c00;'>Matter pairing gewist.<br>Rebooting...</h2>");
-    Serial.println("\n=== MATTER RESET via web ===");
-    nvs_handle_t h;
-    const char* ns[] = {"chip-factory", "chip-config", "chip-counters", "chip-kvs"};
-    for (int k = 0; k < 4; k++) {
-      if (nvs_open(ns[k], NVS_READWRITE, &h) == ESP_OK) {
-        nvs_erase_all(h); nvs_commit(h); nvs_close(h);
-        Serial.printf("  gewist: %s\n", ns[k]);
-      }
-    }
-    delay(800);
-    ESP.restart();
+      "<h2 style='text-align:center;padding:40px;color:#c00;'>"
+      "Matter nuclear reset gestart...<br>"
+      "<small style='font-size:16px;color:#666;'>Settings worden bewaard. Rebooting in 1 sec.</small>"
+      "</h2>");
+    Serial.println("\n[WEB] Matter nuclear reset aangevraagd via /matter_reset");
   });
 
   // v1.8: /settings ook chunked — was html.reserve(10000) op heap
+  // v1.10: /settings hybrid — statische form-shell + circuits via JS/fetch(/json_settings)
+  // Shell is ~1.5 KB → laadt altijd volledig ongeacht heap.
+  // JS bouwt circuit-blokken na onload, save via /save_settings ongewijzigd.
   server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request){
     AsyncResponseStream* p = request->beginResponseStream("text/html; charset=utf-8");
     p->print(F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
@@ -1492,11 +1571,16 @@ body{font-family:Arial,sans-serif;background:#fff;margin:0;padding:0;}
       ".sidebar a{display:block;background:#369;color:#fff;padding:8px;margin:8px auto;text-decoration:none;font-weight:bold;font-size:12px;border-radius:6px;text-align:center;width:60px;}"
       ".sidebar a:hover{background:#036;}.sidebar a.active{background:#c00;}"
       ".main{flex:1;padding:20px;overflow-y:auto;}"
-      "table{width:100%;margin:15px 0;}td{padding:10px;}"
-      "input,select{padding:8px;border:1px solid #ccc;border-radius:4px;}"
-      ".btn{background:#369;color:#fff;padding:12px 30px;border:none;border-radius:6px;font-size:16px;cursor:pointer;margin:20px 10px;}"
-      ".btn:hover{background:#036;}"
-      "@media(max-width:600px){.container{flex-direction:column;}.sidebar{width:100%;border-right:none;border-bottom:3px solid #c00;display:flex;justify-content:center;}.sidebar a{width:60px;margin:0 3px;}.main{padding:8px;}}"
+      "table{width:100%;margin:8px 0;}td{padding:8px;}"
+      "input,select{padding:6px;border:1px solid #ccc;border-radius:4px;box-sizing:border-box;}"
+      ".btn{background:#369;color:#fff;padding:10px 24px;border:none;border-radius:6px;font-size:15px;cursor:pointer;margin:8px 6px;}"
+      ".btn:hover{background:#036;}.btn-red{background:#c00;}.btn-red:hover{background:#900;}"
+      ".cgroup{background:#369;color:#fff;padding:3px 8px;border-radius:4px;margin:12px 0 4px 0;font-weight:bold;font-size:13px;}"
+      "#circuits-area{min-height:40px;}"
+      ".loading{color:#999;font-style:italic;padding:8px;}"
+      "@media(max-width:600px){.container{flex-direction:column;}.sidebar{width:100%;border-right:none;"
+      "border-bottom:3px solid #c00;display:flex;justify-content:center;}.sidebar a{width:60px;margin:0 3px;}"
+      ".main{padding:8px;}}"
       "</style></head><body>"
       "<div class='header'><div class='header-left'>"));
     p->print(room_id);
@@ -1505,7 +1589,7 @@ body{font-family:Arial,sans-serif;background:#fff;margin:0;padding:0;}
       "<a href='/'>Status</a><a href='/matter'>Matter</a>"
       "<a href='/update'>OTA</a><a href='/json'>JSON</a>"
       "<a href='/settings' class='active'>Settings</a>"
-      "</div><div class='main'><form action='/save_settings' method='get'>"));
+      "</div><div class='main'><form id='sf' action='/save_settings' method='get'>"));
 
     // Crash-log sectie
     {
@@ -1519,63 +1603,104 @@ body{font-family:Arial,sans-serif;background:#fff;margin:0;padding:0;}
       p->print(F("'>"));
       p->print(crashCnt);
       p->print(F("</b>"));
-      if (crashCnt > 0) p->print(F(" &nbsp;<a href='/clear_crash_log' style='font-size:12px;color:#369;' onclick=\"return confirm('Crash-log wissen?');\">Wissen</a>"));
+      if (crashCnt > 0) p->print(F(" &nbsp;<a href='/clear_crash_log' style='font-size:12px;color:#369;'"
+        " onclick='return confirm(&quot;Crash-log wissen?&quot;);'>Wissen</a>"));
       p->print(F("</td></tr><tr><td>Laatste crash</td><td><code style='font-size:12px;'>"));
       p->print(crashReason);
       p->print(F("</code></td></tr></table><hr style='border:1px solid #ccc;margin:10px 0;'>"));
     }
 
-    // Hoofd instellingen
-    p->print(F("<table>"));
-    p->print(F("<tr><td style='width:35%;'>WiFi SSID</td><td><input type='text' name='wifi_ssid' value='"));      p->print(wifi_ssid);         p->print(F("' style='width:100%;'></td></tr>"));
-    p->print(F("<tr><td>WiFi Password</td><td><input type='password' name='wifi_pass' value='"));                 p->print(wifi_pass);         p->print(F("' style='width:100%;'></td></tr>"));
-    p->print(F("<tr><td>Static IP</td><td><input type='text' name='static_ip' value='"));                         p->print(static_ip_str);     p->print(F("' placeholder='leeg = DHCP' style='width:100%;'></td></tr>"));
-    p->print(F("<tr><td style='width:35%;'>Room naam</td><td><input type='text' name='room_id' value='"));         p->print(room_id);           p->print(F("' required style='width:100%;'></td></tr>"));
-    p->print(F("<tr><td>Aantal circuits</td><td><input type='number' name='circuits_num' min='1' max='16' value='")); p->print(circuits_num);   p->print(F("' style='width:100%;'></td></tr>"));
-    p->print(F("<tr><td>Poll interval (sec)</td><td><input type='number' min='5' name='poll_interval' value='")); p->print(poll_interval);     p->print(F("' style='width:100%;'></td></tr>"));
-    p->print(F("<tr><td>ECO IP adres</td><td><input type='text' name='eco_ip' value='"));                          p->print(eco_controller_ip); p->print(F("' style='width:100%;'></td></tr>"));
-    p->print(F("<tr><td>ECO mDNS naam</td><td><input type='text' name='eco_mdns' value='"));                       p->print(eco_controller_mdns); p->print(F("' style='width:100%;'></td></tr>"));
-    p->print(F("<tr><td>ECO Threshold (kWh)</td><td><input type='number' step='0.1' name='eco_thresh' value='")); p->print(eco_threshold);     p->print(F("' style='width:100%;'></td></tr>"));
-    p->print(F("<tr><td>ECO Hysteresis (kWh)</td><td><input type='number' step='0.1' name='eco_hyst' value='"));  p->print(eco_hysteresis);    p->print(F("' style='width:100%;'></td></tr>"));
-    p->print(F("<tr><td>ECO Tmin - Stop (&deg;C)</td><td><input type='number' step='0.1' name='eco_min_temp' value='")); p->print(eco_min_temp); p->print(F("' style='width:100%;'></td></tr>"));
-    p->print(F("<tr><td>ECO Tmax - Start (&deg;C)</td><td><input type='number' step='0.1' name='eco_max_temp' value='")); p->print(eco_max_temp); p->print(F("' style='width:100%;'></td></tr>"));
-    p->print(F("<tr><td>Boiler ref temp (&deg;C)</td><td><input type='number' step='0.1' name='boiler_ref_temp' value='")); p->print(boiler_ref_temp); p->print(F("' style='width:100%;'></td></tr>"));
-    p->print(F("<tr><td>Boiler vol/laag (L)</td><td><input type='number' step='1' name='boiler_volume' value='")); p->print(boiler_layer_volume, 0); p->print(F("' style='width:100%;'></td></tr>"));
-    p->print(F("</table><div style='padding:6px;'>"));
+    // Statische velden — WiFi, IP, systeem, ECO (~1 KB, altijd werkend)
+    p->print(F("<table id='base-table'>"));
+    p->print(F("<tr><td style='width:35%;'>WiFi SSID</td>"
+      "<td><input type='text' name='wifi_ssid' id='f_ssid' style='width:100%;'></td></tr>"));
+    p->print(F("<tr><td>WiFi Password</td>"
+      "<td><input type='password' name='wifi_pass' id='f_pass' style='width:100%;'></td></tr>"));
+    p->print(F("<tr><td>Static IP</td>"
+      "<td><input type='text' name='static_ip' id='f_ip' placeholder='leeg = DHCP' style='width:100%;'></td></tr>"));
+    p->print(F("<tr><td>Room naam</td>"
+      "<td><input type='text' name='room_id' id='f_rid' required style='width:100%;'></td></tr>"));
+    p->print(F("<tr><td>Aantal circuits</td>"
+      "<td><input type='number' name='circuits_num' id='f_cnum' min='1' max='7' style='width:100%;'></td></tr>"));
+    p->print(F("<tr><td>Poll interval (sec)</td>"
+      "<td><input type='number' min='5' name='poll_interval' id='f_poll' style='width:100%;'></td></tr>"));
+    p->print(F("<tr><td>ECO IP adres</td>"
+      "<td><input type='text' name='eco_ip' id='f_eip' style='width:100%;'></td></tr>"));
+    p->print(F("<tr><td>ECO mDNS naam</td>"
+      "<td><input type='text' name='eco_mdns' id='f_emdns' style='width:100%;'></td></tr>"));
+    p->print(F("<tr><td>ECO Threshold (kWh)</td>"
+      "<td><input type='number' step='0.1' name='eco_thresh' id='f_ethr' style='width:100%;'></td></tr>"));
+    p->print(F("<tr><td>ECO Hysteresis (kWh)</td>"
+      "<td><input type='number' step='0.1' name='eco_hyst' id='f_ehys' style='width:100%;'></td></tr>"));
+    p->print(F("<tr><td>ECO Tmin - Stop (&deg;C)</td>"
+      "<td><input type='number' step='0.1' name='eco_min_temp' id='f_emin' style='width:100%;'></td></tr>"));
+    p->print(F("<tr><td>ECO Tmax - Start (&deg;C)</td>"
+      "<td><input type='number' step='0.1' name='eco_max_temp' id='f_emax' style='width:100%;'></td></tr>"));
+    p->print(F("<tr><td>Boiler ref temp (&deg;C)</td>"
+      "<td><input type='number' step='0.1' name='boiler_ref_temp' id='f_bref' style='width:100%;'></td></tr>"));
+    p->print(F("<tr><td>Boiler vol/laag (L)</td>"
+      "<td><input type='number' step='1' name='boiler_volume' id='f_bvol' style='width:100%;'></td></tr>"));
+    p->print(F("</table>"));
 
-    // Sensor nicknames
-    for (int i = 0; i < 6; i++) {
-      p->print(F("<label style='display:block;margin:4px 0;'>S")); p->print(i+1);
-      p->print(F(": <input type='text' name='sensor_nick_")); p->print(i);
-      p->print(F("' value='")); p->print(sensor_nicknames[i]);
-      p->print(F("' style='width:220px;'></label>"));
-    }
-    p->print(F("</div>"));
+    // Sensor nicknames placeholder
+    p->print(F("<div id='nicks-area'><span class='loading'>Sensor namen laden...</span></div>"));
 
-    // Circuits
-    for (int i = 0; i < circuits_num; i++) {
-      p->print(F("<div style='background:#369;color:#fff;padding:3px 8px;border-radius:4px;margin:10px 0 4px 0;font-weight:bold;font-size:13px;'>Circuit "));
-      p->print(i+1); p->print(F("</div>"));
-      p->print(F("<table style='width:100%;margin:0 0 8px 0;'>"));
-      p->print(F("<tr><td style='width:35%'>Naam</td><td><input type='text' name='circuit_name_")); p->print(i); p->print(F("' value='")); p->print(circuits[i].name); p->print(F("' style='width:100%'></td></tr>"));
-      p->print(F("<tr><td>IP</td><td><input type='text' name='circuit_ip_")); p->print(i); p->print(F("' value='")); p->print(circuits[i].ip); p->print(F("' style='width:100%'></td></tr>"));
-      p->print(F("<tr><td>mDNS</td><td><input type='text' name='circuit_mdns_")); p->print(i); p->print(F("' value='")); p->print(circuits[i].mdns); p->print(F("' style='width:100%' placeholder='ZONDER .local'></td></tr>"));
-      p->print(F("<tr><td>Vermogen (kW)</td><td><input type='number' step='0.001' name='circuit_power_")); p->print(i); p->print(F("' value='")); p->print(circuits[i].power_kw, 3); p->print(F("' style='width:100%'></td></tr>"));
-      p->print(F("<tr><td>TSTAT</td><td><input type='checkbox' name='circuit_tstat_")); p->print(i); p->print(F("' value='1'")); if(circuits[i].has_tstat) p->print(F(" checked")); p->print(F("> Pin: <select name='circuit_tstat_pin_")); p->print(i); p->print(F("'>"));
-      p->print(F("<option value='255'")); if(circuits[i].tstat_pin==255) p->print(F(" selected")); p->print(F(">Geen</option>"));
-      p->print(F("<option value='10'"));  if(circuits[i].tstat_pin==10)  p->print(F(" selected")); p->print(F(">10</option>"));
-      p->print(F("<option value='11'"));  if(circuits[i].tstat_pin==11)  p->print(F(" selected")); p->print(F(">11</option>"));
-      p->print(F("<option value='12'"));  if(circuits[i].tstat_pin==12)  p->print(F(" selected")); p->print(F(">12</option>"));
-      p->print(F("</select></td></tr></table>"));
-    }
+    // Circuits placeholder
+    p->print(F("<div id='circuits-area'><span class='loading'>Circuits laden...</span></div>"));
 
-    p->print(F("<div style='text-align:center;'>"
+    // Submit knoppen + JS
+    p->print(F("<div style='text-align:center;margin-top:16px;'>"
       "<button type='submit' class='btn'>Opslaan &amp; Reboot</button>"
-      "<a href='/' class='btn' style='display:inline-block;text-decoration:none;background:#c00;'>Annuleren</a>"
-      "</div></form></div></div></body></html>"));
+      "<a href='/' class='btn btn-red' style='display:inline-block;text-decoration:none;'>Annuleren</a>"
+      "</div></form>"
+      "<script>"
+      "fetch('/json_settings').then(r=>r.json()).then(d=>{"
+        // Vul basis-velden
+        "document.getElementById('f_ssid').value=d.wifi_ssid||'';"
+        "document.getElementById('f_pass').value=d.wifi_pass||'';"
+        "document.getElementById('f_ip').value=d.static_ip||'';"
+        "document.getElementById('f_rid').value=d.room_id||'';"
+        "document.getElementById('f_cnum').value=d.circuits_num||7;"
+        "document.getElementById('f_poll').value=d.poll_interval||10;"
+        "document.getElementById('f_eip').value=d.eco_ip||'';"
+        "document.getElementById('f_emdns').value=d.eco_mdns||'';"
+        "document.getElementById('f_ethr').value=d.eco_threshold||15;"
+        "document.getElementById('f_ehys').value=d.eco_hysteresis||5;"
+        "document.getElementById('f_emin').value=d.eco_min_temp||80;"
+        "document.getElementById('f_emax').value=d.eco_max_temp||90;"
+        "document.getElementById('f_bref').value=d.boiler_ref_temp||20;"
+        "document.getElementById('f_bvol').value=d.boiler_layer_volume||50;"
+        // Sensor nicknames
+        "let nh='';"
+        "if(d.sensor_nicknames)d.sensor_nicknames.forEach((n,i)=>{"
+          "nh+=`<label style='display:block;margin:4px 0;'>S${i+1}: "
+          "<input type='text' name='sensor_nick_${i}' value='${n}' style='width:220px;'></label>`;"
+        "});"
+        "document.getElementById('nicks-area').innerHTML=nh;"
+        // Circuits
+        "let ch='';"
+        "if(d.circuits)d.circuits.forEach((c,i)=>{"
+          "const pins=[255,10,11,12];"
+          "const pnames=['Geen','10','11','12'];"
+          "ch+=`<div class='cgroup'>Circuit ${i+1}</div>`;"
+          "ch+=`<table style='width:100%;margin:0 0 8px 0;'>`;"
+          "ch+=`<tr><td style='width:35%'>Naam</td><td><input type='text' name='circuit_name_${i}' value='${c.name}' style='width:100%'></td></tr>`;"
+          "ch+=`<tr><td>IP</td><td><input type='text' name='circuit_ip_${i}' value='${c.ip||''}' style='width:100%'></td></tr>`;"
+          "ch+=`<tr><td>mDNS</td><td><input type='text' name='circuit_mdns_${i}' value='${c.mdns||''}' style='width:100%' placeholder='ZONDER .local'></td></tr>`;"
+          "ch+=`<tr><td>Vermogen (kW)</td><td><input type='number' step='0.001' name='circuit_power_${i}' value='${c.power_kw.toFixed(3)}' style='width:100%'></td></tr>`;"
+          "ch+=`<tr><td>TSTAT</td><td><input type='checkbox' name='circuit_tstat_${i}' value='1'${c.has_tstat?' checked':''}> Pin: <select name='circuit_tstat_pin_${i}'>`;"
+          "pins.forEach((p,j)=>{"
+            "ch+=`<option value='${p}'${c.tstat_pin===p?' selected':''}>${pnames[j]}</option>`;"
+          "});"
+          "ch+=`</select></td></tr></table>`;"
+        "});"
+        "document.getElementById('circuits-area').innerHTML=ch;"
+      "}).catch(e=>{"
+        "document.getElementById('circuits-area').innerHTML='<p style=color:#c00>Fout bij laden circuits</p>';"
+      "});"
+      "</script></div></div></body></html>"));
     request->send(p);
   });
-
   server.on("/save_settings", HTTP_GET, [](AsyncWebServerRequest *request){
     Serial.println("\n=== SAVE SETTINGS ===");
     
@@ -1606,7 +1731,7 @@ body{font-family:Arial,sans-serif;background:#fff;margin:0;padding:0;}
     
     int save_count = request->arg("circuits_num").toInt();
     if (save_count < 1) save_count = 1;
-    if (save_count > 16) save_count = 16;
+    if (save_count > 7) save_count = 7;  // v1.9: max 7 i.p.v. 16
 
     for (int i = 0; i < save_count; i++) {
       String name_val = request->arg(("circuit_name_" + String(i)).c_str());
@@ -1838,6 +1963,112 @@ void factoryResetNVS() {
   ESP.restart();
 }
 
+// v1.10: Nuclear Matter reset — 100% betrouwbare methode
+// Probleem met oude methode: nvs_erase_all() per namespace vanuit async-task
+//   → task-conflict met Matter-stack, namespace-resten, onvolledige wis
+// Deze methode:
+//   1) Laad ALLE hvac-config naar RAM
+//   2) nvs_flash_erase() — wist de VOLLEDIGE NVS-partitie atomair
+//   3) nvs_flash_init()  — herinitialiseer NVS
+//   4) Schrijf hvac-config terug vanuit RAM
+//   5) Reboot → Matter.isDeviceCommissioned() = false gegarandeerd
+void matterNuclearReset() {
+  Serial.println("\n=== MATTER NUCLEAR RESET ===");
+  Serial.println("Stap 1: Settings laden naar RAM...");
+
+  // ── Laad alle hvac-config naar lokale RAM-variabelen ─────────────────────
+  preferences.begin("hvac-config", true);  // read-only
+
+  String  bk_room_id          = preferences.getString("room_id",          room_id);
+  String  bk_wifi_ssid         = preferences.getString("wifi_ssid",        wifi_ssid);
+  String  bk_wifi_pass         = preferences.getString("wifi_pass",        wifi_pass);
+  String  bk_static_ip         = preferences.getString("static_ip",        static_ip_str);
+  int     bk_circuits_num      = preferences.getInt   ("circuits_num",     circuits_num);
+  int     bk_poll_interval     = preferences.getInt   ("poll_interval",    poll_interval);
+  String  bk_eco_ip            = preferences.getString("eco_ip",           eco_controller_ip);
+  String  bk_eco_mdns          = preferences.getString("eco_mdns",         eco_controller_mdns);
+  float   bk_eco_threshold     = preferences.getFloat ("eco_threshold",    eco_threshold);
+  float   bk_eco_hysteresis    = preferences.getFloat ("eco_hysteresis",   eco_hysteresis);
+  float   bk_eco_min_temp      = preferences.getFloat ("eco_min_temp",     eco_min_temp);
+  float   bk_eco_max_temp      = preferences.getFloat ("eco_max_temp",     eco_max_temp);
+  float   bk_boiler_ref_temp   = preferences.getFloat ("boiler_ref_temp",  boiler_ref_temp);
+  float   bk_boiler_volume     = preferences.getFloat ("boiler_volume",    boiler_layer_volume);
+  float   bk_tot_sch_kwh       = preferences.getFloat (NVS_TOTAL_SCH_KWH, 0.0);
+  float   bk_tot_won_kwh       = preferences.getFloat (NVS_TOTAL_WON_KWH, 0.0);
+
+  String bk_nick[6];
+  for (int i = 0; i < 6; i++)
+    bk_nick[i] = preferences.getString(("sensor_nick_" + String(i)).c_str(), "Sensor " + String(i+1));
+
+  // Circuit backup
+  struct CircuitBackup {
+    char name[32]; char ip[20]; char mdns[32];
+    float power_kw; bool has_tstat; int tstat_pin;
+  } bk_circ[7];
+  int bk_num = min(bk_circuits_num, 7);
+  for (int i = 0; i < bk_num; i++) {
+    String tmp;
+    tmp = preferences.getString(("c" + String(i) + "_name").c_str(), "Circuit " + String(i+1));
+    strlcpy(bk_circ[i].name, tmp.c_str(), 32);
+    tmp = preferences.getString(("c" + String(i) + "_ip").c_str(), "");
+    strlcpy(bk_circ[i].ip, tmp.c_str(), 20);
+    tmp = preferences.getString(("c" + String(i) + "_mdns").c_str(), "");
+    strlcpy(bk_circ[i].mdns, tmp.c_str(), 32);
+    bk_circ[i].power_kw  = preferences.getFloat(("c" + String(i) + "_power").c_str(), 0.0);
+    bk_circ[i].has_tstat = preferences.getBool (("c" + String(i) + "_tstat").c_str(), false);
+    bk_circ[i].tstat_pin = preferences.getInt  (("c" + String(i) + "_pin").c_str(),   255);
+  }
+  preferences.end();
+  Serial.println("  Settings in RAM geladen.");
+
+  // ── Stap 2: Volledige NVS-partitie wissen ────────────────────────────────
+  Serial.println("Stap 2: nvs_flash_erase() — volledige NVS partitie...");
+  esp_err_t err = nvs_flash_erase();
+  Serial.printf("  nvs_flash_erase: %s\n", esp_err_to_name(err));
+
+  // ── Stap 3: NVS herinitialiseren ─────────────────────────────────────────
+  Serial.println("Stap 3: nvs_flash_init()...");
+  err = nvs_flash_init();
+  Serial.printf("  nvs_flash_init: %s\n", esp_err_to_name(err));
+
+  // ── Stap 4: hvac-config terugschrijven ───────────────────────────────────
+  Serial.println("Stap 4: Settings terugschrijven...");
+  preferences.begin("hvac-config", false);
+  preferences.putString("room_id",       bk_room_id);
+  preferences.putString("wifi_ssid",     bk_wifi_ssid);
+  preferences.putString("wifi_pass",     bk_wifi_pass);
+  preferences.putString("static_ip",     bk_static_ip);
+  preferences.putInt   ("circuits_num",  bk_circuits_num);
+  preferences.putInt   ("poll_interval", bk_poll_interval);
+  preferences.putString("eco_ip",        bk_eco_ip);
+  preferences.putString("eco_mdns",      bk_eco_mdns);
+  preferences.putFloat ("eco_threshold", bk_eco_threshold);
+  preferences.putFloat ("eco_hysteresis",bk_eco_hysteresis);
+  preferences.putFloat ("eco_min_temp",  bk_eco_min_temp);
+  preferences.putFloat ("eco_max_temp",  bk_eco_max_temp);
+  preferences.putFloat ("boiler_ref_temp", bk_boiler_ref_temp);
+  preferences.putFloat ("boiler_volume", bk_boiler_volume);
+  preferences.putFloat (NVS_TOTAL_SCH_KWH, bk_tot_sch_kwh);
+  preferences.putFloat (NVS_TOTAL_WON_KWH, bk_tot_won_kwh);
+  for (int i = 0; i < 6; i++)
+    preferences.putString(("sensor_nick_" + String(i)).c_str(), bk_nick[i]);
+  for (int i = 0; i < bk_num; i++) {
+    preferences.putString(("c" + String(i) + "_name").c_str(),  bk_circ[i].name);
+    preferences.putString(("c" + String(i) + "_ip").c_str(),    bk_circ[i].ip);
+    preferences.putString(("c" + String(i) + "_mdns").c_str(),  bk_circ[i].mdns);
+    preferences.putFloat (("c" + String(i) + "_power").c_str(), bk_circ[i].power_kw);
+    preferences.putBool  (("c" + String(i) + "_tstat").c_str(), bk_circ[i].has_tstat);
+    preferences.putInt   (("c" + String(i) + "_pin").c_str(),   bk_circ[i].tstat_pin);
+  }
+  preferences.end();
+  Serial.println("  Settings teruggeschreven.");
+
+  // ── Stap 5: Reboot ───────────────────────────────────────────────────────
+  Serial.println("Stap 5: Rebooting... Matter zal ongepaard opstarten.");
+  delay(500);
+  ESP.restart();
+}
+
 
 
 
@@ -1859,7 +2090,7 @@ void setup() {
   Serial.begin(115200);
   delay(1500);  // Wacht tot Serial Monitor klaar is
   while (Serial.available()) Serial.read();  // Flush eventuele rommel
-  Serial.println("\n\n=== HVAC Controller v1.8 ===");
+  Serial.println("\n\n=== HVAC Controller v1.10 ===");
   Serial.println("Commando's: 'R' = NVS reset, 'reset-matter', 'reset-all', 'status'");
 
   // v1.7 FIX 4: Crash-log lezen bij boot — toont of vorige run gecrasht is
@@ -1978,14 +2209,20 @@ void setup() {
     );
   }
 
-  for (int i = 0; i < 16; i++) {
-    circuits[i].name = preferences.getString(("c" + String(i) + "_name").c_str(), "Circuit " + String(i + 1));
-    circuits[i].ip = preferences.getString(("c" + String(i) + "_ip").c_str(), "");
-    circuits[i].mdns = preferences.getString(("c" + String(i) + "_mdns").c_str(), "");
+  // v1.9: loop tot circuits_num (7) i.p.v. 16 — 9 lege slots = 27 onnodige heap-allocs weg
+  for (int i = 0; i < circuits_num; i++) {
+    // v1.9: getString() in tijdelijke String, dan strlcpy naar char[] in struct
+    String tmp;
+    tmp = preferences.getString(("c" + String(i) + "_name").c_str(), "Circuit " + String(i + 1));
+    strlcpy(circuits[i].name, tmp.c_str(), sizeof(circuits[i].name));
+    tmp = preferences.getString(("c" + String(i) + "_ip").c_str(), "");
+    strlcpy(circuits[i].ip, tmp.c_str(), sizeof(circuits[i].ip));
+    tmp = preferences.getString(("c" + String(i) + "_mdns").c_str(), "");
+    strlcpy(circuits[i].mdns, tmp.c_str(), sizeof(circuits[i].mdns));
     circuits[i].power_kw = preferences.getFloat(("c" + String(i) + "_power").c_str(), 0.0);
     circuits[i].has_tstat = preferences.getBool(("c" + String(i) + "_tstat").c_str(), false);
     circuits[i].tstat_pin = preferences.getInt(("c" + String(i) + "_pin").c_str(), 255);
-    
+
     circuits[i].online = false;
     circuits[i].heating_on = false;
     circuits[i].vent_request = 0;
@@ -1998,10 +2235,10 @@ void setup() {
 
   Serial.println("\n=== Circuit Config ===");
   for (int i = 0; i < circuits_num; i++) {
-    Serial.printf("c%d: %s", i + 1, circuits[i].name.c_str());
+    Serial.printf("c%d: %s", i + 1, circuits[i].name);
     if (circuits[i].has_tstat) Serial.printf(" [TSTAT pin %d]", circuits[i].tstat_pin);
-    if (circuits[i].ip.length() > 0) Serial.printf(" [IP: %s]", circuits[i].ip.c_str());
-    if (circuits[i].mdns.length() > 0) Serial.printf(" [mDNS: %s]", circuits[i].mdns.c_str());
+    if (strlen(circuits[i].ip)   > 0) Serial.printf(" [IP: %s]",   circuits[i].ip);
+    if (strlen(circuits[i].mdns) > 0) Serial.printf(" [mDNS: %s]", circuits[i].mdns);
     Serial.printf(" [%.3f kW]\n", circuits[i].power_kw);
   }
 
@@ -2120,7 +2357,7 @@ void setup() {
         circuits[i].override_active = true;      // DAN
         circuits[i].override_state  = on_off;
         Serial.printf("[HomeKit] Kring %d '%s' → override %s (10m)\n",
-                      i + 1, circuits[i].name.c_str(), on_off ? "AAN" : "UIT");
+                      i + 1, circuits[i].name, on_off ? "AAN" : "UIT");
         ignore_callbacks = true;
         matter_alles_auto.setOnOff(false);
         ignore_callbacks = false;
@@ -2183,6 +2420,12 @@ void setup() {
       return true;
     });
 
+    // v1.10: Heap-diagnose voor Matter.begin() — geeft inzicht in stack-kost
+    uint32_t heap_pre = ESP.getFreeHeap();
+    uint32_t lb_pre   = ESP.getMaxAllocHeap();
+    Serial.printf("[HEAP pre-Matter]  free=%u  largest=%u  min_ever=%u\n",
+      heap_pre, lb_pre, ESP.getMinFreeHeap());
+
     // Matter starten — detecteer fout via isDeviceCommissioned na begin
     Matter.begin();
 
@@ -2190,6 +2433,15 @@ void setup() {
     bool matter_ok = true;
     // Korte delay om stack te laten starten
     delay(200);
+
+    // v1.10: Heap-diagnose na Matter.begin()
+    uint32_t heap_post = ESP.getFreeHeap();
+    uint32_t lb_post   = ESP.getMaxAllocHeap();
+    Serial.printf("[HEAP post-Matter] free=%u  largest=%u  min_ever=%u\n",
+      heap_post, lb_post, ESP.getMinFreeHeap());
+    Serial.printf("[HEAP Matter kost] free:-%d  largest:-%d\n",
+      (int)(heap_pre - heap_post), (int)(lb_pre - lb_post));
+
     // Als getManualPairingCode() leeg is EN niet commissioned → init gefaald
     if (!Matter.isDeviceCommissioned() && Matter.getManualPairingCode().length() < 5) {
       matter_ok = false;
@@ -2199,17 +2451,8 @@ void setup() {
     Serial.println(F("\n══════════════════════════════════════════"));
     if (!matter_ok) {
       Serial.println(F("MATTER: Initialisatie MISLUKT (NVS corrupt?)"));
-      Serial.println(F("-> Matter NVS wordt automatisch gewist en reboot..."));
-      nvs_handle_t h;
-      const char* ns[] = {"chip-factory", "chip-config", "chip-counters", "chip-kvs"};
-      for (int k = 0; k < 4; k++) {
-        if (nvs_open(ns[k], NVS_READWRITE, &h) == ESP_OK) {
-          nvs_erase_all(h); nvs_commit(h); nvs_close(h);
-          Serial.printf("  gewist: %s\n", ns[k]);
-        }
-      }
-      delay(500);
-      ESP.restart();
+      Serial.println(F("-> Nuclear reset: NVS volledig wissen, settings bewaren, reboot..."));
+      matterNuclearReset();  // v1.10: nuclear reset i.p.v. per-namespace wis
     } else if (!Matter.isDeviceCommissioned()) {
       Serial.println(F("MATTER: Nog niet gepaard."));
       Serial.println(F("► Manuele code:"));
@@ -2242,24 +2485,22 @@ void loop() {
 
   uptime_sec = millis() / 1000;
 
+  // v1.10: Nuclear reset flag — wordt gezet door /matter_reset handler (async-task)
+  // Uitvoering vanuit main loop: geen task-conflict met Matter-stack NVS-writes
+  if (matter_nuclear_reset_requested) {
+    matter_nuclear_reset_requested = false;
+    delay(200);  // Geef async response tijd om te verzenden
+    matterNuclearReset();
+  }
+
   // ── Matter serial commando's ─────────────────────────────────────────────
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
     if (cmd.equalsIgnoreCase("reset-matter")) {
-      Serial.println(F("Matter pairing wissen (instellingen blijven intact)..."));
-      // Wis alleen de Matter/chip NVS namespaces
-      nvs_handle_t h;
-      const char* chip_ns[] = {"chip-factory", "chip-config", "chip-counters", "chip-kvs"};
-      for (int k = 0; k < 4; k++) {
-        if (nvs_open(chip_ns[k], NVS_READWRITE, &h) == ESP_OK) {
-          nvs_erase_all(h);
-          nvs_commit(h);
-          nvs_close(h);
-        }
-      }
-      delay(300);
-      ESP.restart();
+      // v1.10: nuclear reset via serial — zelfde methode als web-knop
+      Serial.println(F("Matter nuclear reset (instellingen blijven intact)..."));
+      matterNuclearReset();
     }
     if (cmd.equalsIgnoreCase("reset-all")) {
       Serial.println(F("Alles wissen (instellingen + Matter) + reboot..."));
@@ -2275,7 +2516,7 @@ void loop() {
       for (int i = 0; i < circuits_num; i++) {
         bool eff = circuits[i].override_active ? circuits[i].override_state : circuits[i].heating_on;
         Serial.printf("c%d %-12s %.3fkW  %s [%s]\n",
-          i + 1, circuits[i].name.c_str(), circuits[i].power_kw,
+          i + 1, circuits[i].name, circuits[i].power_kw,
           eff ? "AAN" : "UIT", circuits[i].override_active ? "OVR" : "AUT");
       }
       Serial.printf("Vent: %d%%  Totaal: %.3f kW\n", vent_percent, total_power);
