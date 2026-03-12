@@ -4,6 +4,14 @@ Thuis bereikbaar op static IP http://192.168.0.70  (mDNS verwijderd — conflict
 
 Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
 
+12mar26       Version v 1.12: matter_boiler_bot + matter_alles_auto verwijderd (~7KB heap),
+              /json gesplitst: compact a/b/c-keys voor Sheets, /json_ui circuits voor webpagina,
+              KW /ECO-velden uit JSON weg, SCH/WON pompstaat correct (relay+auto+manual),
+              RSSI/heap/heap_block toegevoegd aan JSON, crash-log String→char[].
+12mar26       Version v 1.11: Heap-optimalisaties: globale String→char[] (room_id/wifi/eco_ip/sensor_nicks),
+              getPumpStatusMessage() verwijderd (status-banner weg), /matter chunked streaming (~3KB),
+              getTrend/getFormattedDateTime→const char* (0 heap-allocs), StaticJson<4096→2048>,
+              strcmp fix savePumpEvent, Refresh-knop weg.
 12mar26       Version v 1.10: Nuclear Matter reset (nvs_flash_erase+restore, 100% betrouwbaar, settings intact),
               /settings hybrid (static shell + circuits via /json_settings + JS), heap-diagnose log bij boot.
 12mar26       Version v 1.9: uptime toegevoegd aan /json, Circuit struct String→char[] (48 heap-allocs weg),
@@ -124,19 +132,20 @@ struct PumpEvent {
 };
 
 // Global variables
-String room_id = "HVAC";
-String wifi_ssid = "";
-String wifi_pass = "";
-String static_ip_str = "";
+// v1.11: String→char[] — permanente heap-allocs weg, BSS/data segment
+char room_id[32]         = "HVAC";
+char wifi_ssid[64]       = "";
+char wifi_pass[64]       = "";
+char static_ip_str[20]   = "";
 IPAddress static_ip;
 int circuits_num = 7;
 Circuit circuits[7];  // v1.9: was [16] — 9 lege slots = 27 onnodige heap-allocs
-String sensor_nicknames[6];
+char sensor_nicknames[6][32];
 float eco_threshold = 15.0;  // V53.5: Updated default
 float eco_hysteresis = 5.0;  // V53.5: Updated default
 int poll_interval = 10;
-String eco_controller_ip = "";
-String eco_controller_mdns = "eco";
+char eco_controller_ip[20]   = "";
+char eco_controller_mdns[32] = "eco";
 float eco_min_temp = 80.0;  // V53.5: Stop temp (Tmin)
 float eco_max_temp = 90.0;  // V53.5: Start temp (Tmax)
 float boiler_ref_temp = 20.0;
@@ -154,10 +163,10 @@ bool          vent_override_active   = false;
 unsigned long vent_override_start    = 0;
 const unsigned long VENT_OVERRIDE_DURATION = 180UL * 60UL * 1000UL;  // 3 uur
 
-// Matter flags (zelfde principe als HVAC_SIM)
+// Matter flags
 bool ignore_callbacks       = false;
-bool alles_auto_requested   = false;
-bool matter_nuclear_reset_requested = false;  // v1.10: flag voor main-loop nuclear reset
+// v1.12: alles_auto_requested verwijderd (matter_alles_auto endpoint weg)
+bool matter_nuclear_reset_requested = false;
 unsigned long last_matter_update = 0;
 
 // =============================================================================
@@ -167,10 +176,10 @@ unsigned long last_matter_update = 0;
 // Verwijderd: matter_boiler_mid (sch_temps[2]), matter_sch_qtot (FAKE kWh), matter_total_power (FAKE kW)
 // Besparing: ~3 × 3.5 KB = ~10 KB heap
 MatterTemperatureSensor matter_boiler_top;   // sch_temps[0]  — bovenste laag
-MatterTemperatureSensor matter_boiler_bot;   // sch_temps[5]  — onderste laag
+// v1.12: matter_boiler_bot verwijderd (~3.5KB) — bovenste laag is voldoende indicator
+// v1.12: matter_alles_auto verwijderd (~3.5KB) — overrides via webUI resetten
 
 MatterOnOffPlugin       matter_circuit[7];   // Kringen 1–7, bidirectioneel
-MatterOnOffPlugin       matter_alles_auto;   // Reset alle overrides → auto
 
 MatterFan               matter_vent;         // Ventilatie: snelheid + aan/uit
 
@@ -230,15 +239,16 @@ OneWireNg::Id sensor_addresses[6] = {
 };
 
 // Helper functies
-String getFormattedDateTime() {
-  time_t now; 
+// v1.11: static char buf — geen heap-alloc bij aanroep
+const char* getFormattedDateTime() {
+  static char buf[32];
+  time_t now;
   time(&now);
   if (now < 1700000000) return "tijd niet gesync";
-  struct tm tm; 
+  struct tm tm;
   localtime_r(&now, &tm);
-  char buf[32]; 
   strftime(buf, sizeof(buf), "%d-%m-%Y %H:%M:%S", &tm);
-  return String(buf);
+  return buf;
 }
 
 float calculateQtot(float temps[6]) {
@@ -265,10 +275,10 @@ float calculateQtot(float temps[6]) {
   return total_energy / 1000.0;
 }
 
-// V53.5: NIEUW - Trend helper function (van ECO v1.3)
-String getTrend(float current, float previous, float threshold = 0.1) {
-  if (abs(current - previous) < threshold) return "→";
-  return (current > previous) ? "↑" : "↓";
+// v1.11: const char* i.p.v. String — geen heap-alloc
+const char* getTrend(float current, float previous, float threshold = 0.1) {
+  if (abs(current - previous) < threshold) return "\xe2\x86\x92";  // →
+  return (current > previous) ? "\xe2\x86\x91" : "\xe2\x86\x93";  // ↑ ↓
 }
 
 void readBoilerTemps() {
@@ -336,7 +346,7 @@ void pollEcoBoiler() {
   if (millis() - last_eco_poll < (unsigned long)poll_interval * 1000) return;
   last_eco_poll = millis();
   
-  if (eco_controller_ip.length() == 0 && eco_controller_mdns.length() == 0) {
+  if (strlen(eco_controller_ip) == 0 && strlen(eco_controller_mdns) == 0) {
     eco_boiler.online = false;
     return;
   }
@@ -347,12 +357,12 @@ void pollEcoBoiler() {
   HTTPClient http;
   String url;
   
-  if (eco_controller_ip.length() > 0) {
-    url = "http://" + eco_controller_ip + "/json";  // V53.5: Changed to /json
+  if (strlen(eco_controller_ip) > 0) {
+    url = "http://" + String(eco_controller_ip) + "/json";  // V53.5: Changed to /json
   } else {
-    Serial.printf("Resolving %s.local ... ", eco_controller_mdns.c_str());
+    Serial.printf("Resolving %s.local ... ", eco_controller_mdns);
     IPAddress resolvedIP;
-    if (WiFi.hostByName((eco_controller_mdns + ".local").c_str(), resolvedIP)) {
+    if (WiFi.hostByName((String(eco_controller_mdns) + ".local").c_str(), resolvedIP)) {
       if (resolvedIP.toString() == "0.0.0.0" || resolvedIP[0] == 0) {
         Serial.printf("FAILED\n");
         eco_boiler.online = false;
@@ -426,7 +436,7 @@ void pollEcoBoiler() {
 void savePumpEvent(const char* pump_type, float kwh) {
   unsigned long timestamp = millis() / 1000;
   
-  if (String(pump_type) == "SCH") {
+  if (strcmp(pump_type, "SCH") == 0) {
     last_sch_pump.timestamp = timestamp;
     last_sch_pump.kwh_pumped = kwh;
     total_sch_kwh += kwh;
@@ -434,7 +444,7 @@ void savePumpEvent(const char* pump_type, float kwh) {
     preferences.putFloat(NVS_LAST_SCH_KWH, kwh);
     preferences.putFloat(NVS_TOTAL_SCH_KWH, total_sch_kwh);
     Serial.printf("Saved SCH pump event: %.2f kWh (totaal: %.2f kWh)\n", kwh, total_sch_kwh);
-  } else if (String(pump_type) == "WON") {
+  } else if (strcmp(pump_type, "WON") == 0) {
     last_won_pump.timestamp = timestamp;
     last_won_pump.kwh_pumped = kwh;
     total_won_kwh += kwh;
@@ -445,80 +455,7 @@ void savePumpEvent(const char* pump_type, float kwh) {
   }
 }
 
-// V53.5: NIEUW - Smart pump status messages (inspired by ECO v1.3)
-String getPumpStatusMessage() {
-  // Manual override heeft hoogste prioriteit
-  if (sch_pump_manual || won_pump_manual) {
-    unsigned long elapsed_sch = millis() - sch_pump_manual_start;
-    unsigned long elapsed_won = millis() - won_pump_manual_start;
-    
-    if (sch_pump_manual && elapsed_sch < MANUAL_PUMP_DURATION) {
-      unsigned long remaining = (MANUAL_PUMP_DURATION - elapsed_sch) / 1000;
-      return "🎮 Handmatig: SCH pomp " + String(sch_pump_manual_on ? "AAN" : "UIT") + 
-             " (" + String(remaining) + "s resterend)";
-    }
-    if (won_pump_manual && elapsed_won < MANUAL_PUMP_DURATION) {
-      unsigned long remaining = (MANUAL_PUMP_DURATION - elapsed_won) / 1000;
-      return "🎮 Handmatig: WON pomp " + String(won_pump_manual_on ? "AAN" : "UIT") + 
-             " (" + String(remaining) + "s resterend)";
-    }
-  }
-  
-  // ECO offline check
-  if (!eco_boiler.online) {
-    return "○ ECO boiler offline - geen automatische distributie";
-  }
-  
-  // State-based context-aware messages
-  switch (eco_pump_state) {
-    case ECO_IDLE: {
-      bool temp_trigger = eco_boiler.temp_top > eco_max_temp;
-      bool energy_trigger = eco_boiler.qtot > eco_threshold;
-      
-      if (temp_trigger || energy_trigger) {
-        String reason = "";
-        if (temp_trigger) {
-          reason = "Temp: " + String(eco_boiler.temp_top, 1) + "°C > " + String(eco_max_temp, 0) + "°C";
-        }
-        if (energy_trigger) {
-          if (reason.length() > 0) reason += " EN ";
-          reason += "Energie: " + String(eco_boiler.qtot, 1) + " > " + String(eco_threshold, 1) + " kWh";
-        }
-        return "⏸️ Trigger actief (" + reason + ") - wacht op cyclus start";
-      } else {
-        return "✓ Standby - Temp: " + String(eco_boiler.temp_top, 1) + "°C, Energie: " + 
-               String(eco_boiler.qtot, 1) + " kWh (beide onder limiet)";
-      }
-    }
-    
-    case ECO_PUMP_SCH: {
-      unsigned long elapsed = millis() - eco_pump_timer;
-      unsigned long remaining = (ECO_PUMP_DURATION - elapsed) / 1000;
-      return "🔵 SCH pompt naar Schuur (" + String(remaining) + "s / 60s) - Fair share transfer";
-    }
-    
-    case ECO_WAIT_SCH: {
-      unsigned long elapsed = millis() - eco_pump_timer;
-      unsigned long remaining = (ECO_WAIT_SCH_DURATION - elapsed) / 1000;
-      return "⏳ Wacht na SCH pomp (" + String(remaining) + "s / 60s) - WON is volgende";
-    }
-    
-    case ECO_PUMP_WON: {
-      unsigned long elapsed = millis() - eco_pump_timer;
-      unsigned long remaining = (ECO_PUMP_DURATION - elapsed) / 1000;
-      return "🟢 WON pompt naar Woning (" + String(remaining) + "s / 60s) - Fair share transfer";
-    }
-    
-    case ECO_WAIT_WON: {
-      unsigned long elapsed = millis() - eco_pump_timer;
-      unsigned long remaining = (ECO_WAIT_WON_DURATION - elapsed) / 1000;
-      return "⏳ Wacht na WON pomp (" + String(remaining) + "s / 120s) - SCH is volgende";
-    }
-    
-    default:
-      return "? Onbekende pump status";
-  }
-}
+// v1.11: getPumpStatusMessage() verwijderd — status-banner weggevallen
 
 
 
@@ -942,112 +879,73 @@ String getWifiScanJson() {
   return json;
 }
 
-// V53.5: JSON met pump_status toegevoegd
+// v1.12: Compacte JSON met a/b/c-keys voor Google Sheets — geen circuits-array, geen KW*/ECO-velden
+// Gesplitst: /json = flat logdata, /json_ui = circuits-array voor webpagina
 String getLogData() {
-  // v1.9: 4096 i.p.v. 2048 — circuits array toegevoegd (7 × ~15 velden)
-  // StaticJsonDocument op stack: veilig voor éénmalige aanroep, geen heap-alloc
-  StaticJsonDocument<4096> doc;
-  
-  doc["eco_online"] = eco_boiler.online ? 1 : 0;
-  
-  doc["KSTopH"] = sch_temps[0];
-  doc["KSTopL"] = sch_temps[1];
-  doc["KSMidH"] = sch_temps[2];
-  doc["KSMidL"] = sch_temps[3];
-  doc["KSBotH"] = sch_temps[4];
-  doc["KSBotL"] = sch_temps[5];
-  
-  float KSAv = 0;
-  int valid_count = 0;
+  StaticJsonDocument<768> doc;
+
+  doc["a"] = uptime_sec;
+
+  // SCH boiler temperaturen
+  doc["b"] = sch_temps[0];
+  doc["c"] = sch_temps[1];
+  doc["d"] = sch_temps[2];
+  doc["e"] = sch_temps[3];
+  doc["f"] = sch_temps[4];
+  doc["g"] = sch_temps[5];
+
+  // Gemiddelde boilertemperatuur
+  float KSAv = 0; int valid_count = 0;
   for (int i = 0; i < 6; i++) {
-    if (sensor_ok[i] && sch_temps[i] > -100) {
-      KSAv += sch_temps[i];
-      valid_count++;
-    }
+    if (sensor_ok[i] && sch_temps[i] > -100) { KSAv += sch_temps[i]; valid_count++; }
   }
-  if (valid_count > 0) KSAv /= valid_count;
-  doc["KSAv"] = KSAv;
-  doc["KSQtot"] = sch_qtot;
-  
-  doc["KWTopH"] = 0.0;
-  doc["KWTopL"] = 0.0;
-  doc["KWMidH"] = 0.0;
-  doc["KWMidL"] = 0.0;
-  doc["KWBotH"] = 0.0;
-  doc["KWBotL"] = 0.0;
-  doc["KWAv"] = 0.0;
-  doc["KWQtot"] = 0.0;
-  
-  doc["EAv"] = eco_boiler.temp_avg;
-  doc["EQtot"] = eco_boiler.qtot;
-  doc["ET"] = eco_max_temp;
-  doc["EB"] = eco_min_temp;
-  
-  doc["BB"] = (int)circuits[0].duty_cycle;
-  doc["WP"] = (int)circuits[1].duty_cycle;
-  doc["BK"] = (int)circuits[2].duty_cycle;
-  doc["ZP"] = (int)circuits[3].duty_cycle;
-  doc["EP"] = (int)circuits[4].duty_cycle;
-  doc["KK"] = (int)circuits[5].duty_cycle;
-  doc["IK"] = (int)circuits[6].duty_cycle;
-  
-  doc["R1"] = circuits[0].heating_on ? 1 : 0;
-  doc["R2"] = circuits[1].heating_on ? 1 : 0;
-  doc["R3"] = circuits[2].heating_on ? 1 : 0;
-  doc["R4"] = circuits[3].heating_on ? 1 : 0;
-  doc["R5"] = circuits[4].heating_on ? 1 : 0;
-  doc["R6"] = circuits[5].heating_on ? 1 : 0;
-  doc["R7"] = circuits[6].heating_on ? 1 : 0;
-  
-  doc["R9"] = (sch_pump_manual || (mcp_available && mcp.digitalRead(RELAY_PUMP_SCH) == LOW)) ? 1 : 0;
-  doc["R10"] = (won_pump_manual || (mcp_available && mcp.digitalRead(RELAY_PUMP_WON) == LOW)) ? 1 : 0;
-  
+  doc["h"] = valid_count > 0 ? KSAv / valid_count : 0.0;
+
+  // Duty cycles
+  doc["i"] = (int)circuits[0].duty_cycle;
+  doc["j"] = (int)circuits[1].duty_cycle;
+  doc["k"] = (int)circuits[2].duty_cycle;
+  doc["l"] = (int)circuits[3].duty_cycle;
+  doc["m"] = (int)circuits[4].duty_cycle;
+  doc["n"] = (int)circuits[5].duty_cycle;
+  doc["o"] = (int)circuits[6].duty_cycle;
+
+  // Relay-staten
+  doc["p"] = circuits[0].heating_on ? 1 : 0;
+  doc["q"] = circuits[1].heating_on ? 1 : 0;
+  doc["r"] = circuits[2].heating_on ? 1 : 0;
+  doc["s"] = circuits[3].heating_on ? 1 : 0;
+  doc["t"] = circuits[4].heating_on ? 1 : 0;
+  doc["u"] = circuits[5].heating_on ? 1 : 0;
+  doc["v"] = circuits[6].heating_on ? 1 : 0;
+
+  // Totaal vermogen + ventilatie
   float total_power = 0.0;
-  for (int i = 0; i < circuits_num; i++) {
+  for (int i = 0; i < circuits_num; i++)
     if (circuits[i].heating_on) total_power += circuits[i].power_kw;
-  }
-  doc["HeatDem"] = total_power;
-  doc["Vent"] = vent_percent;
-  
-  // V53.5: NIEUW - pump_status in JSON
-  String pumpStatus = getPumpStatusMessage();
-  pumpStatus.replace("\"", "\\\"");  // Escape quotes
-  doc["pump_status"] = pumpStatus;
+  doc["w"] = total_power;
+  doc["x"] = vent_percent;
 
-  // v1.9: uptime was absent sinds v1.7
-  doc["uptime"] = uptime_sec;
+  // SCH pomp: aan als relay LOW, eco-state actief, of manual override ON
+  bool sch_on = (mcp_available && mcp.digitalRead(RELAY_PUMP_SCH) == LOW)
+             || (eco_pump_state == ECO_PUMP_SCH)
+             || (sch_pump_manual && sch_pump_manual_on
+                 && millis() - sch_pump_manual_start < MANUAL_PUMP_DURATION);
+  doc["y"]  = sch_on ? 1 : 0;
+  doc["z"]  = last_sch_pump.kwh_pumped;
 
-  // v1.9: circuits array voor hybrid UI — JS laadt de tabel via fetch('/json')
-  JsonArray jc = doc.createNestedArray("circuits");
-  for (int i = 0; i < circuits_num; i++) {
-    JsonObject c = jc.createNestedObject();
-    c["name"]    = circuits[i].name;
-    c["ip"]      = strlen(circuits[i].ip)   > 0 ? circuits[i].ip   : nullptr;
-    c["mdns"]    = strlen(circuits[i].mdns) > 0 ? circuits[i].mdns : nullptr;
-    c["online"]  = circuits[i].online;
-    c["setpoint"]   = circuits[i].setpoint;
-    c["room_temp"]  = circuits[i].room_temp;
-    c["heat_request"] = circuits[i].heat_request;
-    c["home_status"]  = circuits[i].home_status;
-    c["heating_on"]   = circuits[i].heating_on;
-    c["power_kw"]     = circuits[i].power_kw;
-    c["duty_cycle"]   = circuits[i].duty_cycle;
-    c["vent_request"] = circuits[i].vent_request;
-    c["override_active"] = circuits[i].override_active;
-    c["override_state"]  = circuits[i].override_state;
-    // Override resterende seconden — berekend server-side
-    if (circuits[i].override_active) {
-      unsigned long elapsed = millis() - circuits[i].override_start;
-      c["override_remaining"] = elapsed < 600000UL ? (int)((600000UL - elapsed) / 1000) : 0;
-    } else {
-      c["override_remaining"] = 0;
-    }
-    // TSTAT status
-    if (circuits[i].has_tstat && mcp_available && circuits[i].tstat_pin < 13)
-      c["tstat"] = (mcp.digitalRead(circuits[i].tstat_pin) == LOW) ? "ON" : "OFF";
-    else
-      c["tstat"] = nullptr;
-  }
+  // WON pomp: idem
+  bool won_on = (mcp_available && mcp.digitalRead(RELAY_PUMP_WON) == LOW)
+             || (eco_pump_state == ECO_PUMP_WON)
+             || (won_pump_manual && won_pump_manual_on
+                 && millis() - won_pump_manual_start < MANUAL_PUMP_DURATION);
+  doc["aa"] = won_on ? 1 : 0;
+  doc["ab"] = last_won_pump.kwh_pumped;
+
+  // Systeem info
+  doc["ac"] = WiFi.RSSI();
+  doc["ad"] = (ESP.getFreeHeap() * 100) / ESP.getHeapSize();
+  doc["ae"] = ESP.getMaxAllocHeap() / 1024;
 
   String json;
   serializeJson(doc, json);
@@ -1078,9 +976,8 @@ void streamMainPage(AsyncWebServerRequest* request) {
     if (circuits[i].heating_on) total_power_local += circuits[i].power_kw;
   }
 
-  String temp_trend       = getTrend(eco_boiler.temp_top, prev_eco_temp_top, 0.5);
-  String qtot_trend       = getTrend(eco_boiler.qtot,     prev_eco_qtot,     0.1);
-  String pumpStatusMsg    = getPumpStatusMessage();
+  const char* trend_char_t = getTrend(eco_boiler.temp_top, prev_eco_temp_top, 0.5);
+  const char* trend_char_q = getTrend(eco_boiler.qtot,     prev_eco_qtot,     0.1);
 
   const char* temp_color  = eco_boiler.temp_top >= 90 ? "#c00"
                           : eco_boiler.temp_top >= 80 ? "#fa0"
@@ -1088,8 +985,6 @@ void streamMainPage(AsyncWebServerRequest* request) {
   const char* energy_color = eco_boiler.qtot >= 20 ? "#c00"
                            : eco_boiler.qtot >= 15 ? "#fa0"
                            : eco_boiler.qtot >= 10 ? "#0a0" : "#999";
-  const char* trend_char_t = temp_trend == "↑" ? "↑" : (temp_trend == "↓" ? "↓" : "→");
-  const char* trend_char_q = qtot_trend == "↑" ? "↑" : (qtot_trend == "↓" ? "↓" : "→");
 
   uint32_t lb = ESP.getMaxAllocHeap();
   const char* lb_color = lb >= 35000 ? "#0a0" : lb >= 25000 ? "#f80" : "#c00";
@@ -1107,17 +1002,13 @@ void streamMainPage(AsyncWebServerRequest* request) {
     ".header{display:flex;background:#ffcc00;color:#000;padding:10px 15px;font-size:18px;font-weight:bold;align-items:center;}"
     ".header-left{flex:1;}.header-right{flex:1;text-align:right;font-size:15px;}"
     ".slider{width:150px;height:28px;vertical-align:middle;}"
-    ".status-banner{background:#336699;color:#fff;padding:10px 15px;display:flex;align-items:center;border-bottom:3px solid #ffcc00;font-size:14px;}"
-    ".status-label{font-weight:bold;margin-right:8px;}.status-message{flex:1;}"
-    ".container{display:flex;min-height:calc(100vh - 110px);}"
+    ".container{display:flex;min-height:calc(100vh - 60px);}"
     ".sidebar{width:80px;padding:10px 5px;background:#fff;border-right:3px solid #c00;}"
     ".sidebar a{display:block;background:#369;color:#fff;padding:8px;text-decoration:none;font-weight:bold;font-size:12px;border-radius:6px;text-align:center;width:60px;margin:8px auto;}"
     ".sidebar a:hover{background:#036;}.sidebar a.active{background:#c00;}"
     ".main{flex:1;padding:15px;overflow-y:auto;}"
     ".group-title{font-size:17px;font-style:italic;font-weight:bold;color:#fff;background:#336699;padding:8px 12px;margin:20px 0 8px 0;border-radius:4px;}"
     ".section-divider{border-top:1px solid #eee;margin:10px 0;}"
-    ".refresh-btn{background:#369;color:#fff;padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:bold;margin:20px 0;width:100%;max-width:300px;}"
-    ".refresh-btn:hover{background:#036;}"
     "table{width:100%;border-collapse:collapse;margin-bottom:15px;}"
     "td.label{color:#369;font-size:13px;padding:8px 5px;border-bottom:1px solid #ddd;text-align:left;}"
     "td.value{background:#e6f0ff;font-size:13px;padding:8px 5px;border-bottom:1px solid #ddd;text-align:center;}"
@@ -1143,10 +1034,6 @@ void streamMainPage(AsyncWebServerRequest* request) {
   p->print(uptime_sec);
   p->print(F(" s &nbsp;&nbsp; "));
   p->print(getFormattedDateTime());
-  p->print(F("</div></div>"
-    "<div class='status-banner'><div class='status-label'>STATUS:</div>"
-    "<div class='status-message'>"));
-  p->print(pumpStatusMsg);
   p->print(F("</div></div>"
     "<div class='container'>"
     "<div class='sidebar'>"
@@ -1283,15 +1170,13 @@ void streamMainPage(AsyncWebServerRequest* request) {
   p->print(lb / 1024);
   p->print(F(" KB — "));
   p->print(lb_label);
-  p->print(F("</b></td></tr></table>"));
-  p->print(F("<button class='refresh-btn' onclick='refreshData()'>&#128260; Refresh Data</button>"
+  p->print(F("</b></td></tr></table>"
     "</div></div>"
     "<script>"
     "function setPump(t,s){fetch(t==='sch'?(s?'/pump_sch_on':'/pump_sch_off'):(s?'/pump_won_on':'/pump_won_off')).then(()=>setTimeout(()=>location.reload(),500));}"
     "function cancelPump(t){fetch(t==='sch'?'/pump_sch_cancel':'/pump_won_cancel').then(()=>setTimeout(()=>location.reload(),500));}"
     "function setOverride(c,s){fetch((s?'/circuit_override_on':'/circuit_override_off')+'?circuit='+c).then(()=>setTimeout(()=>location.reload(),500));}"
     "function cancelOverride(c){fetch('/circuit_override_cancel?circuit='+c).then(()=>setTimeout(()=>location.reload(),500));}"
-    "function refreshData(){location.reload();}"
     // Timer countdown
     "setInterval(()=>{"
       "document.querySelectorAll('.timer').forEach(b=>{"
@@ -1301,10 +1186,9 @@ void streamMainPage(AsyncWebServerRequest* request) {
         "else if(r===0)setTimeout(()=>location.reload(),1000);"
       "});"
     "},1000);"
-    // Circuits tabel via /json
+    // v1.12: circuits via /json_ui — gescheiden van /json (Google Sheets)
     "function loadCircuits(){"
-      "fetch('/json').then(r=>r.json()).then(d=>{"
-        "const circ=d.circuits;"
+      "fetch('/json_ui').then(r=>r.json()).then(circ=>{"
         "if(!circ||!circ.length){document.getElementById('ct').innerHTML="
           "'<tr><td colspan=14 style=\"text-align:center;color:#c00;\">Geen data</td></tr>';return;}"
         "let h='';"
@@ -1344,8 +1228,13 @@ void streamMainPage(AsyncWebServerRequest* request) {
         "h+=`<td colspan='9' class='label'><b>TOTAAL</b></td>`;"
         "h+=`<td class='value'></td>`;"
         "h+=`<td class='value'><b>${tot_p.toFixed(1)} kW</b></td>`;"
-        "h+=`<td colspan='3' class='value'><b>${d.Vent??0} %</b></td></tr>`;"
+        "h+=`<td colspan='3' class='value'><b id='vent-tot'>... %</b></td></tr>`;"
         "document.getElementById('ct').innerHTML=h;"
+        // Haal vent% op via /json (compact endpoint)
+        "fetch('/json').then(r=>r.json()).then(j=>{"
+          "const el=document.getElementById('vent-tot');"
+          "if(el)el.textContent=(j.x??0)+' %';"
+        "}).catch(()=>{});"
       "}).catch(()=>{"
         "document.getElementById('ct').innerHTML="
           "'<tr><td colspan=14 style=\"text-align:center;color:#c00;\">Fout bij laden</td></tr>';"
@@ -1389,8 +1278,44 @@ void setupWebServer() {
     streamMainPage(request);
   });
 
+  // v1.12: /json = compacte flat logdata (Google Sheets), /json_ui = circuits voor webpagina
   server.on("/json", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "application/json", getLogData());
+  });
+
+  server.on("/json_ui", HTTP_GET, [](AsyncWebServerRequest *request){
+    StaticJsonDocument<2048> doc;
+    JsonArray jc = doc.to<JsonArray>();
+    for (int i = 0; i < circuits_num; i++) {
+      JsonObject c = jc.createNestedObject();
+      c["name"]    = circuits[i].name;
+      c["ip"]      = strlen(circuits[i].ip)   > 0 ? circuits[i].ip   : nullptr;
+      c["mdns"]    = strlen(circuits[i].mdns) > 0 ? circuits[i].mdns : nullptr;
+      c["online"]  = circuits[i].online;
+      c["setpoint"]      = circuits[i].setpoint;
+      c["room_temp"]     = circuits[i].room_temp;
+      c["heat_request"]  = circuits[i].heat_request;
+      c["home_status"]   = circuits[i].home_status;
+      c["heating_on"]    = circuits[i].heating_on;
+      c["power_kw"]      = circuits[i].power_kw;
+      c["duty_cycle"]    = circuits[i].duty_cycle;
+      c["vent_request"]  = circuits[i].vent_request;
+      c["override_active"] = circuits[i].override_active;
+      c["override_state"]  = circuits[i].override_state;
+      if (circuits[i].override_active) {
+        unsigned long elapsed = millis() - circuits[i].override_start;
+        c["override_remaining"] = elapsed < 600000UL ? (int)((600000UL - elapsed) / 1000) : 0;
+      } else {
+        c["override_remaining"] = 0;
+      }
+      if (circuits[i].has_tstat && mcp_available && circuits[i].tstat_pin < 13)
+        c["tstat"] = (mcp.digitalRead(circuits[i].tstat_pin) == LOW) ? "ON" : "OFF";
+      else
+        c["tstat"] = nullptr;
+    }
+    String json;
+    serializeJson(doc, json);
+    request->send(200, "application/json", json);
   });
 
   // v1.10: /json_settings — circuit-config als JSON voor hybrid /settings pagina
@@ -1432,28 +1357,27 @@ void setupWebServer() {
   });
 
   server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request){
-    String html = R"rawliteral(
-<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>)rawliteral" + room_id + R"rawliteral( - OTA</title>
-<style>
-body{font-family:Arial,sans-serif;background:#fff;margin:0;padding:20px;text-align:center;}
-h1{color:#369;}
-.button{background:#369;color:#fff;padding:12px 24px;border:none;border-radius:8px;cursor:pointer;font-size:16px;margin:10px;}
-.button:hover{background:#036;}
-.reboot{background:#c00;}
-.reboot:hover{background:#900;}
-</style></head><body>
-<h1>OTA Firmware Update</h1>
-<form method="POST" action="/update" enctype="multipart/form-data">
-<input type="file" name="update" accept=".bin"><br><br>
-<button class="button" type="submit">Upload Firmware</button>
-</form><br>
-<button class="button reboot" onclick="if(confirm('Reboot?'))location.href='/reboot'">Reboot</button>
-<br><br><a href="/">← Terug</a>
-</body></html>
-)rawliteral";
-    request->send(200, "text/html; charset=utf-8", html);
+    AsyncResponseStream* p = request->beginResponseStream("text/html; charset=utf-8");
+    p->print(F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
+      "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+      "<title>"));
+    p->print(room_id);
+    p->print(F(" - OTA</title><style>"
+      "body{font-family:Arial,sans-serif;background:#fff;margin:0;padding:20px;text-align:center;}"
+      "h1{color:#369;}"
+      ".button{background:#369;color:#fff;padding:12px 24px;border:none;border-radius:8px;cursor:pointer;font-size:16px;margin:10px;}"
+      ".button:hover{background:#036;}"
+      ".reboot{background:#c00;}.reboot:hover{background:#900;}"
+      "</style></head><body>"
+      "<h1>OTA Firmware Update</h1>"
+      "<form method='POST' action='/update' enctype='multipart/form-data'>"
+      "<input type='file' name='update' accept='.bin'><br><br>"
+      "<button class='button' type='submit'>Upload Firmware</button>"
+      "</form><br>"
+      "<button class='button reboot' onclick=\"if(confirm('Reboot?'))location.href='/reboot'\">Reboot</button>"
+      "<br><br><a href='/'>&#8592; Terug</a>"
+      "</body></html>"));
+    request->send(p);
   });
 
   server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request) {
@@ -1478,66 +1402,53 @@ h1{color:#369;}
   });
 
   server.on("/matter", HTTP_GET, [](AsyncWebServerRequest *request) {
-    String pairingCode = Matter.isDeviceCommissioned() ? "" : Matter.getManualPairingCode();
-    String html;
-    html.reserve(3000);
-    html = R"rawliteral(
-<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Matter</title>
-<style>
-body{font-family:Arial,sans-serif;background:#fff;margin:0;padding:0;}
-.header{display:flex;background:#ffcc00;color:#000;padding:10px 15px;font-size:18px;font-weight:bold;}
-.header-left{flex:1;}.header-right{flex:1;text-align:right;font-size:15px;}
-.sidebar{width:80px;padding:10px 5px;background:#fff;border-right:3px solid #c00;box-sizing:border-box;flex-shrink:0;}
-.sidebar a{display:block;background:#369;color:#fff;padding:8px;margin:8px auto;text-decoration:none;font-weight:bold;font-size:12px;border-radius:6px;text-align:center;width:60px;}
-.sidebar a:hover{background:#036;}.sidebar a.active{background:#c00;}
-.container{display:flex;min-height:calc(100vh - 60px);}
-.main{flex:1;padding:30px;}
-.card{background:#e6f0ff;border:2px solid #369;border-radius:10px;padding:25px;max-width:500px;margin:20px 0;}
-.code{font-family:monospace;font-size:28px;font-weight:bold;color:#003366;background:#fff;padding:12px 20px;border-radius:6px;border:2px solid #369;display:inline-block;letter-spacing:2px;margin:12px 0;}
-.ok{color:#060;font-size:22px;font-weight:bold;}
-.btn-reset{background:#c00;color:#fff;padding:10px 24px;border:none;border-radius:6px;font-size:15px;cursor:pointer;margin-top:20px;}
-.btn-reset:hover{background:#900;}
-.hint{font-size:13px;color:#666;margin-top:8px;}
-@media(max-width:600px){.container{flex-direction:column;}.sidebar{width:100%;border-right:none;border-bottom:3px solid #c00;display:flex;justify-content:center;}.sidebar a{margin:0 3px;}}
-</style></head><body>
-<div class="header">
-  <div class="header-left">)rawliteral" + room_id + R"rawliteral(</div>
-  <div class="header-right">Matter / HomeKit</div>
-</div>
-<div class="container">
-  <div class="sidebar">
-    <a href="/">Status</a>
-    <a href="/matter" class="active">Matter</a>
-    <a href="/update">OTA</a>
-    <a href="/json">JSON</a>
-    <a href="/settings">Settings</a>
-  </div>
-  <div class="main"><div class="card">)rawliteral";
-
+    // v1.11: chunked streaming i.p.v. String html.reserve(3000) — ~3KB heap bespaard
+    AsyncResponseStream* p = request->beginResponseStream("text/html; charset=utf-8");
+    p->print(F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
+      "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+      "<title>Matter</title><style>"
+      "body{font-family:Arial,sans-serif;background:#fff;margin:0;padding:0;}"
+      ".header{display:flex;background:#ffcc00;color:#000;padding:10px 15px;font-size:18px;font-weight:bold;}"
+      ".header-left{flex:1;}.header-right{flex:1;text-align:right;font-size:15px;}"
+      ".sidebar{width:80px;padding:10px 5px;background:#fff;border-right:3px solid #c00;box-sizing:border-box;flex-shrink:0;}"
+      ".sidebar a{display:block;background:#369;color:#fff;padding:8px;margin:8px auto;text-decoration:none;font-weight:bold;font-size:12px;border-radius:6px;text-align:center;width:60px;}"
+      ".sidebar a:hover{background:#036;}.sidebar a.active{background:#c00;}"
+      ".container{display:flex;min-height:calc(100vh - 60px);}"
+      ".main{flex:1;padding:30px;}"
+      ".card{background:#e6f0ff;border:2px solid #369;border-radius:10px;padding:25px;max-width:500px;margin:20px 0;}"
+      ".code{font-family:monospace;font-size:28px;font-weight:bold;color:#003366;background:#fff;padding:12px 20px;border-radius:6px;border:2px solid #369;display:inline-block;letter-spacing:2px;margin:12px 0;}"
+      ".ok{color:#060;font-size:22px;font-weight:bold;}"
+      ".btn-reset{background:#c00;color:#fff;padding:10px 24px;border:none;border-radius:6px;font-size:15px;cursor:pointer;margin-top:20px;}"
+      ".btn-reset:hover{background:#900;}"
+      ".hint{font-size:13px;color:#666;margin-top:8px;}"
+      "@media(max-width:600px){.container{flex-direction:column;}.sidebar{width:100%;border-right:none;border-bottom:3px solid #c00;display:flex;justify-content:center;}.sidebar a{margin:0 3px;}}"
+      "</style></head><body>"
+      "<div class='header'><div class='header-left'>"));
+    p->print(room_id);
+    p->print(F("</div><div class='header-right'>Matter / HomeKit</div></div>"
+      "<div class='container'><div class='sidebar'>"
+      "<a href='/'>Status</a><a href='/matter' class='active'>Matter</a>"
+      "<a href='/update'>OTA</a><a href='/json'>JSON</a>"
+      "<a href='/settings'>Settings</a>"
+      "</div><div class='main'><div class='card'>"));
     if (Matter.isDeviceCommissioned()) {
-      html += R"rawliteral(<div class="ok">&#x2705; Matter gepaard</div>
-        <p>Deze controller is verbonden met Apple Home.</p>)rawliteral";
+      p->print(F("<div class='ok'>&#x2705; Matter gepaard</div>"
+        "<p>Deze controller is verbonden met Apple Home.</p>"));
     } else {
-      html += R"rawliteral(<h2 style="color:#369;margin-top:0;">Matter koppelen</h2>
-        <p><b>1.</b> Open de <b>Apple Home</b> app</p>
-        <p><b>2.</b> Tik op <b>+</b> &rarr; <b>Accessoire toevoegen</b> &rarr; <b>Meer opties</b></p>
-        <p><b>3.</b> Voer de onderstaande code in:</p>
-        <div class="code">)rawliteral" + pairingCode + R"rawliteral(</div>
-        <p class="hint">Of scan de QR-code via de Apple Home app.</p>)rawliteral";
+      String pairingCode = Matter.getManualPairingCode();
+      p->print(F("<h2 style='color:#369;margin-top:0;'>Matter koppelen</h2>"
+        "<p><b>1.</b> Open de <b>Apple Home</b> app</p>"
+        "<p><b>2.</b> Tik op <b>+</b> &rarr; <b>Accessoire toevoegen</b> &rarr; <b>Meer opties</b></p>"
+        "<p><b>3.</b> Voer de onderstaande code in:</p>"
+        "<div class='code'>"));
+      p->print(pairingCode);
+      p->print(F("</div><p class='hint'>Of scan de QR-code via de Apple Home app.</p>"));
     }
-
-    html += R"rawliteral(
-        <br>
-        <button class="btn-reset" onclick="if(confirm('Matter pairing wissen?')) location.href='/matter_reset';">
-          Matter reset (pairing wissen)
-        </button>
-        <p class="hint">Matter reset wist alleen de HomeKit koppeling. HVAC instellingen blijven intact.</p>
-      </div></div></div>
-</body></html>
-)rawliteral";
-    request->send(200, "text/html; charset=utf-8", html);
+    p->print(F("<br><button class='btn-reset' onclick=\"if(confirm('Matter pairing wissen?')) location.href='/matter_reset';\">"
+      "Matter reset (pairing wissen)</button>"
+      "<p class='hint'>Matter reset wist alleen de HomeKit koppeling. HVAC instellingen blijven intact.</p>"
+      "</div></div></div></body></html>"));
+    request->send(p);
   });
 
   // v1.10: Nuclear reset via flag — handler zet alleen flag, main loop voert uit
@@ -1926,9 +1837,8 @@ void check_vent_override() {
 // Matter: sensor feedback en circuit-states pushen naar HomeKit
 // =============================================================================
 void update_matter_sensors() {
-  // v1.8: enkel top + bot — mid/qtot/total_power endpoints verwijderd
   matter_boiler_top.setTemperature(sch_temps[0]);
-  matter_boiler_bot.setTemperature(sch_temps[5]);
+  // v1.12: matter_boiler_bot verwijderd
 
   // Fan: snelheidsfeedback → HomeKit
   // In auto mode ook mode updaten (anders bevriest slider op 0 in Home app)
@@ -2154,18 +2064,19 @@ void setup() {
   // Load NVS
   preferences.begin("hvac-config", false);
 
-  room_id = preferences.getString(NVS_ROOM_ID, "HVAC");
-  wifi_ssid = preferences.getString(NVS_WIFI_SSID, "");
-  wifi_pass = preferences.getString(NVS_WIFI_PASS, "");
-  static_ip_str = preferences.getString(NVS_STATIC_IP, "");
+  // v1.11: getString→strlcpy naar char[] — geen permanente heap-alloc
+  strlcpy(room_id,           preferences.getString(NVS_ROOM_ID,   "HVAC").c_str(), sizeof(room_id));
+  strlcpy(wifi_ssid,         preferences.getString(NVS_WIFI_SSID, "").c_str(),     sizeof(wifi_ssid));
+  strlcpy(wifi_pass,         preferences.getString(NVS_WIFI_PASS, "").c_str(),     sizeof(wifi_pass));
+  strlcpy(static_ip_str,     preferences.getString(NVS_STATIC_IP, "").c_str(),     sizeof(static_ip_str));
   circuits_num = preferences.getInt(NVS_CIRCUITS_NUM, 7);
   circuits_num = constrain(circuits_num, 1, 16);
   
   eco_threshold = preferences.getFloat(NVS_ECO_THRESHOLD, 15.0);  // V53.5: Updated
   eco_hysteresis = preferences.getFloat(NVS_ECO_HYSTERESIS, 5.0);  // V53.5: Updated
   poll_interval = preferences.getInt(NVS_POLL_INTERVAL, 10);
-  eco_controller_ip = preferences.getString(NVS_ECO_IP, "");
-  eco_controller_mdns = preferences.getString(NVS_ECO_MDNS, "eco");
+  strlcpy(eco_controller_ip,   preferences.getString(NVS_ECO_IP,   "").c_str(),  sizeof(eco_controller_ip));
+  strlcpy(eco_controller_mdns, preferences.getString(NVS_ECO_MDNS, "eco").c_str(), sizeof(eco_controller_mdns));
   eco_min_temp = preferences.getFloat(NVS_ECO_MIN_TEMP, 80.0);  // V53.5: Stop temp (was 60.0)
   eco_max_temp = preferences.getFloat(NVS_ECO_MAX_TEMP, 90.0);  // V53.5: Start temp (was 80.0)
   boiler_ref_temp = preferences.getFloat(NVS_BOILER_REF_TEMP, 20.0);
@@ -2203,10 +2114,11 @@ void setup() {
   }
 
   for (int i = 0; i < 6; i++) {
-    sensor_nicknames[i] = preferences.getString(
-      (String(NVS_SENSOR_NICK_BASE) + i).c_str(), 
+    String tmp = preferences.getString(
+      (String(NVS_SENSOR_NICK_BASE) + i).c_str(),
       "Sensor " + String(i + 1)
     );
+    strlcpy(sensor_nicknames[i], tmp.c_str(), 32);
   }
 
   // v1.9: loop tot circuits_num (7) i.p.v. 16 — 9 lege slots = 27 onnodige heap-allocs weg
@@ -2246,24 +2158,23 @@ void setup() {
   WiFi.mode(WIFI_STA);
 
 
-  if (static_ip_str.length() > 0 && static_ip.fromString(static_ip_str)) {
+  if (strlen(static_ip_str) > 0 && static_ip.fromString(static_ip_str)) {
     IPAddress gateway(static_ip[0], static_ip[1], static_ip[2], 1);
     IPAddress subnet(255, 255, 255, 0);
     WiFi.config(static_ip, gateway, subnet, gateway);
-    Serial.printf("Static IP: %s  Gateway (auto): %s\n", 
-                  static_ip_str.c_str(), gateway.toString().c_str());
+    Serial.printf("Static IP: %s  Gateway (auto): %s\n",
+                  static_ip_str, gateway.toString().c_str());
   }
 
-
-  if (wifi_ssid.length() > 0) {
-    Serial.printf("\nConnecting to '%s'...\n", wifi_ssid.c_str());
+  if (strlen(wifi_ssid) > 0) {
+    Serial.printf("\nConnecting to '%s'...\n", wifi_ssid);
     
     int retry_count = 0;
     const int MAX_RETRIES = 5;
     bool connected = false;
     
     while (!connected && retry_count < MAX_RETRIES) {
-      WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
+      WiFi.begin(wifi_ssid, wifi_pass);
       
       unsigned long start_attempt = millis();
       while (WiFi.status() != WL_CONNECTED && (millis() - start_attempt) < 20000) {
@@ -2327,7 +2238,7 @@ void setup() {
     
     if (now >= 1700000000) {
       Serial.println(" OK!");
-      Serial.println("Time: " + getFormattedDateTime());
+      Serial.print("Time: "); Serial.println(getFormattedDateTime());
     } else {
       Serial.println(" TIMEOUT");
       Serial.println("Tijd wordt niet getoond tot NTP sync lukt");
@@ -2341,41 +2252,26 @@ void setup() {
   if (!ap_mode_active) {
     Serial.println(F("\n── Matter initialisatie ────────────────────────────────"));
 
-    // v1.8: enkel top + bot — mid/qtot/total_power endpoints verwijderd
+    // v1.8: enkel top — bot verwijderd in v1.12
     matter_boiler_top.begin();
-    matter_boiler_bot.begin();
 
     // Circuit-plugins: begin + callback
     for (int i = 0; i < 7; i++) {
       matter_circuit[i].begin();
       matter_circuit[i].setOnOff(circuits[i].heating_on);
 
-      // Race condition fix: override_start EERST zetten vóór override_active = true
       matter_circuit[i].onChangeOnOff([i](bool on_off) -> bool {
         if (ignore_callbacks) return true;
-        circuits[i].override_start  = millis();  // EERST
-        circuits[i].override_active = true;      // DAN
+        circuits[i].override_start  = millis();
+        circuits[i].override_active = true;
         circuits[i].override_state  = on_off;
         Serial.printf("[HomeKit] Kring %d '%s' → override %s (10m)\n",
                       i + 1, circuits[i].name, on_off ? "AAN" : "UIT");
-        ignore_callbacks = true;
-        matter_alles_auto.setOnOff(false);
-        ignore_callbacks = false;
         return true;
       });
     }
 
-    // Alles Auto plugin
-    matter_alles_auto.begin();
-    matter_alles_auto.setOnOff(false);
-    matter_alles_auto.onChangeOnOff([](bool on_off) -> bool {
-      if (ignore_callbacks) return true;
-      if (on_off) {
-        alles_auto_requested = true;
-        Serial.println(F("[HomeKit] Alles Auto → aangevraagd, loop() handelt af"));
-      }
-      return true;
-    });
+    // v1.12: matter_alles_auto verwijderd — alles_auto_requested flag niet meer gebruikt
 
     // MatterFan: ventilatiebediening
     matter_vent.begin(0, MatterFan::FAN_MODE_OFF, MatterFan::FAN_MODE_SEQ_OFF_HIGH);
@@ -2523,28 +2419,7 @@ void loop() {
     }
   }
 
-  // ── "Alles Auto": overrides wissen + direct spiegelen ───────────────────
-  if (alles_auto_requested) {
-    alles_auto_requested = false;
-    int count = 0;
-    ignore_callbacks = true;
-    for (int i = 0; i < 7; i++) {
-      if (circuits[i].override_active) {
-        circuits[i].override_active = false;
-        count++;
-        matter_circuit[i].setOnOff(circuits[i].heating_on);
-      }
-    }
-    if (vent_override_active) {
-      vent_override_active  = false;
-      vent_override_percent = 0;
-      matter_vent.setSpeedPercent((uint8_t)vent_percent);
-      count++;
-    }
-    ignore_callbacks = false;
-    matter_alles_auto.setOnOff(false);
-    Serial.printf("[AUTO] %d override(s) gewist — alle kringen + vent terug naar [AUT]\n", count);
-  }
+  // v1.12: alles_auto_requested + matter_alles_auto verwijderd
 
   // ── Ventilatie override timeout ──────────────────────────────────────────
   check_vent_override();
@@ -2558,7 +2433,8 @@ void loop() {
       crashPrefs.begin("crash-log", false);
       uint32_t cnt = crashPrefs.getUInt("count", 0) + 1;
       crashPrefs.putUInt("count", cnt);
-      String reason = "heap " + String(lb / 1024) + "KB @ " + String(uptime_sec) + "s";
+      char reason[40];
+      snprintf(reason, sizeof(reason), "heap %uKB @ %lus", lb / 1024, uptime_sec);
       crashPrefs.putString("reason", reason);
       crashPrefs.end();
       Serial.printf("[HEAP] ⚠️  Largest block %u KB — crash-log geschreven (#%u)\n", lb / 1024, cnt);
