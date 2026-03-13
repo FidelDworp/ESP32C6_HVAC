@@ -4,9 +4,15 @@ Thuis bereikbaar op static IP http://192.168.0.70  (mDNS verwijderd — conflict
 
 Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
 
+13mar26       Version v 1.14: Logica voor ventilatiebeheer en JSON, IO pin bediening herzien.,
+12mar26       Version v 1.13: ArduinoJson v7 heap-fix: StaticJsonDocument volledig weg,
+              globale JsonDocuments met clear() hergebruik voor pollRooms/pollEcoBoiler,
+              buildLogJson() = pure snprintf static char buf (nul heap-alloc),
+              http.getString() → http.getStream() + filter (elimineert ~1KB String/poll/circuit),
+              /json_ui + /json_settings + /scan streamen direct via AsyncResponseStream.
 12mar26       Version v 1.12: matter_boiler_bot + matter_alles_auto verwijderd (~7KB heap),
               /json gesplitst: compact a/b/c-keys voor Sheets, /json_ui circuits voor webpagina,
-              KW /ECO-velden uit JSON weg, SCH/WON pompstaat correct (relay+auto+manual),
+              KW/ECO-velden uit JSON weg, SCH/WON pompstaat correct (relay+auto+manual),
               RSSI/heap/heap_block toegevoegd aan JSON, crash-log String→char[].
 12mar26       Version v 1.11: Heap-optimalisaties: globale String→char[] (room_id/wifi/eco_ip/sensor_nicks),
               getPumpStatusMessage() verwijderd (status-banner weg), /matter chunked streaming (~3KB),
@@ -30,13 +36,14 @@ Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
 10jan26 08:30 Version v 1.1: UI & JSON Improvements
 */
 
-// v1.7 FIX 1: Verplicht voor ESP32-C6 (RISC-V) in Arduino IDE — zonder dit werkt Serial niet correct
-#define Serial Serial0
-
 
 // ============== DEEL 1/5: HEADERS, STRUCTS & HELPER FUNCTIES ==============
 
+// v1.7 FIX 1: Verplicht voor ESP32-C6 (RISC-V) in Arduino IDE — zonder dit werkt Serial niet correct
+#define Serial Serial0
+
 #include <WiFi.h>
+#include <WiFiClientSecure.h>   // v1.13: HTTPS voor Google Apps Script push
 // ESPmDNS verwijderd (v1.7 FIX 5) — veroorzaakte mdns_service_remove_for_host errors samen met Matter-stack
 #include <DNSServer.h>
 #include <AsyncTCP.h>
@@ -90,6 +97,7 @@ const char* NVS_LAST_SCH_KWH = "last_sch_kwh";
 const char* NVS_LAST_WON_KWH = "last_won_kwh";
 const char* NVS_TOTAL_SCH_KWH = "tot_sch_kwh";
 const char* NVS_TOTAL_WON_KWH = "tot_won_kwh";
+const char* NVS_GAS_URL       = "gas_url";   // v1.13: Google Apps Script web app URL
 
 // Structs
 struct Circuit {
@@ -146,6 +154,8 @@ float eco_hysteresis = 5.0;  // V53.5: Updated default
 int poll_interval = 10;
 char eco_controller_ip[20]   = "";
 char eco_controller_mdns[32] = "eco";
+char gas_url[256]            = "";    // v1.13: Google Apps Script web app URL (leeg = uitgeschakeld)
+unsigned long last_gas_push  = 0;     // v1.13: tijdstempel laatste GAS push
 float eco_min_temp = 80.0;  // V53.5: Stop temp (Tmin)
 float eco_max_temp = 90.0;  // V53.5: Start temp (Tmax)
 float boiler_ref_temp = 20.0;
@@ -225,9 +235,17 @@ float prev_eco_qtot = 0.0;
 unsigned long last_poll = 0;
 unsigned long last_temp_read = 0;
 unsigned long uptime_sec = 0;
-unsigned long last_slow = 0;  // v1.7 FIX 4: 60s gate voor heap-bewaking en crash-logging
+unsigned long last_slow = 0;
 bool ap_mode_active = false;
 bool mcp_available = false;
+
+// v1.13: Globale JsonDocuments — ArduinoJson v7 heap-alloceert altijd.
+// Globaal + clear() = eenmalige allocatie, geen fragmentatie per poll-cyclus.
+JsonDocument room_poll_doc;
+JsonDocument eco_poll_doc;
+JsonDocument room_filter_doc;
+JsonDocument eco_filter_doc;
+bool poll_filters_initialized = false;
 
 OneWireNg::Id sensor_addresses[6] = {
   {0x28,0xDB,0xB5,0x03,0x00,0x00,0x80,0xBB},
@@ -388,28 +406,23 @@ void pollEcoBoiler() {
   Serial.printf("Result: %d", httpCode);
   
   if (httpCode == 200) {
-    String payload = http.getString();
-    Serial.printf(" (%d bytes) ✓\n", payload.length());
-    
+    // v1.13: stream direct in JsonDocument — geen http.getString() String-allocatie
+    eco_poll_doc.clear();
+    DeserializationError error = deserializeJson(
+      eco_poll_doc, http.getStream(),
+      DeserializationOption::Filter(eco_filter_doc));
+    Serial.printf(" ✓\n");
+
     eco_boiler.online = true;
     eco_boiler.last_seen = millis();
-    
-    // v1.7 FIX 3: StaticJsonDocument (stack) i.p.v. DynamicJsonDocument (heap) —
-    // voorkomt heap-fragmentatie bij elke poll-cyclus
-    StaticJsonDocument<512> doc;
-    DeserializationError error = deserializeJson(doc, payload);
-    
+
     if (!error) {
-      eco_boiler.temp_avg = doc["EAv"] | 0.0;
-      eco_boiler.qtot = doc["EQtot"] | 0.0;
-      
-      // V53.5: FIX - Correct JSON keys!
-      eco_boiler.temp_top = doc["ETopH"] | 0.0;     // Was: doc["ET"]
-      eco_boiler.temp_bottom = doc["EBotL"] | 0.0;  // Was: doc["EB"]
-      
+      eco_boiler.temp_avg    = eco_poll_doc["EAv"]   | 0.0;
+      eco_boiler.qtot        = eco_poll_doc["EQtot"] | 0.0;
+      eco_boiler.temp_top    = eco_poll_doc["ETopH"] | 0.0;
+      eco_boiler.temp_bottom = eco_poll_doc["EBotL"] | 0.0;
       eco_qtot = eco_boiler.qtot;
-      
-      Serial.printf("    ETopH=%.1f°C EQtot=%.2f kWh EBotL=%.1f°C\n", 
+      Serial.printf("    ETopH=%.1f°C EQtot=%.2f kWh EBotL=%.1f°C\n",
         eco_boiler.temp_top, eco_boiler.qtot, eco_boiler.temp_bottom);
       
       // V53.5: Update trend data (skip eerste poll)
@@ -762,23 +775,23 @@ void pollRooms() {
           Serial.printf("Result: %d", httpCode);
 
           if (httpCode == 200) {
-            String payload = http.getString();
-            Serial.printf(" (%d bytes) ✓\n", payload.length());
+            // v1.13: stream direct in JsonDocument — geen http.getString() String-allocatie
+            // filter voorkomt dat ongebruikte velden geheugen innemen
+            room_poll_doc.clear();
+            DeserializationError error = deserializeJson(
+              room_poll_doc, http.getStream(),
+              DeserializationOption::Filter(room_filter_doc));
+            Serial.printf(" ✓\n");
 
             circuits[i].online = true;
             circuits[i].last_seen = millis();
 
-            // v1.7 FIX 3b: StaticJsonDocument (stack) — voorkomt 7x heap-alloc per poll-cyclus
-            // Enkel 5 velden nodig (y, z, aa, h, af) — 512 bytes ruim voldoende
-            StaticJsonDocument<512> doc;
-            DeserializationError error = deserializeJson(doc, payload);
-
             if (!error) {
-              int   y_val  = doc["y"]  | 0;
-              int   z_val  = doc["z"]  | 0;
-              int   aa_val = doc["aa"] | 0;
-              float h_val  = doc["h"]  | 0.0f;
-              int   af_val = doc["af"] | 0;
+              int   y_val  = room_poll_doc["y"]  | 0;
+              int   z_val  = room_poll_doc["z"]  | 0;
+              int   aa_val = room_poll_doc["aa"] | 0;
+              float h_val  = room_poll_doc["h"]  | 0.0f;
+              int   af_val = room_poll_doc["af"] | 0;
 
               circuits[i].heat_request = (y_val == 1);
               circuits[i].vent_request = z_val;
@@ -856,100 +869,93 @@ void pollRooms() {
     if (circuits[i].heating_on) total_power += circuits[i].power_kw;
   }
   
-  Serial.printf("Total power: %.2f kW, Vent: %d%%\n", total_power, vent_percent);
-  int effective_vent = vent_override_active ? vent_override_percent : vent_percent;
+  Serial.printf("Total power: %.2f kW, Vent rooms: %d%% HVAC: %d%%\n", total_power, vent_percent, vent_override_percent);
+  // v1.13: effectieve ventilatie = max(rooms, HVAC-minimum) — hogere waarde wint altijd
+  int effective_vent = max(vent_percent, vent_override_active ? vent_override_percent : 0);
   int pwm_value = map(effective_vent, 0, 100, 0, 255);
   ledcWrite(VENT_FAN_PIN, pwm_value);
   Serial.printf("Vent PWM: %d/255 (%d%% effectief, override=%s)\n", pwm_value, effective_vent, vent_override_active ? "JA" : "NEE");
   checkPumpFeedback(total_power);
 }
 
-String getWifiScanJson() {
-  // v1.7 FIX 3c: StaticJsonDocument — max 10 netwerken × ~80 bytes = 800 bytes; 1024 ruim genoeg
-  StaticJsonDocument<1024> doc;
-  int n = WiFi.scanNetworks();
-  JsonArray networks = doc.createNestedArray("networks");
-  for (int i = 0; i < n; i++) {
-    JsonObject net = networks.createNestedObject();
-    net["ssid"] = WiFi.SSID(i);
-    net["rssi"] = WiFi.RSSI(i);
-  }
-  String json;
-  serializeJson(doc, json);
-  return json;
+// v1.13: Google Apps Script push — HTTP POST met buildLogJson() payload
+// Wordt elke 5 minuten vanuit loop() aangeroepen als gas_url ingesteld is.
+// Volgt redirects (GAS stuurt altijd 302 → 200).
+void pushToGoogleSheets() {
+  if (strlen(gas_url) == 0) return;
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  WiFiClientSecure client;
+  client.setInsecure();  // GAS gebruikt HTTPS — certificaat niet gevalideerd
+  HTTPClient http;
+  http.begin(client, gas_url);
+  http.addHeader("Content-Type", "application/json");
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(8000);
+
+  const char* payload = buildLogJson();
+  int code = http.POST((uint8_t*)payload, strlen(payload));
+  Serial.printf("[GAS] POST → %d (%d bytes)\n", code, (int)strlen(payload));
+  http.end();
+  client.stop();
 }
 
-// v1.12: Compacte JSON met a/b/c-keys voor Google Sheets — geen circuits-array, geen KW*/ECO-velden
-// Gesplitst: /json = flat logdata, /json_ui = circuits-array voor webpagina
-String getLogData() {
-  StaticJsonDocument<768> doc;
+// v1.13: getWifiScanJson verwijderd — /scan streamt direct (zie setupWebServer)
 
-  doc["a"] = uptime_sec;
+// v1.13: Pure snprintf — geen JsonDocument, geen String, nul heap-allocatie
+// Caller ontvangt pointer naar statische buffer (overschreven bij volgende aanroep)
+const char* buildLogJson() {
+  static char buf[520];
 
-  // SCH boiler temperaturen
-  doc["b"] = sch_temps[0];
-  doc["c"] = sch_temps[1];
-  doc["d"] = sch_temps[2];
-  doc["e"] = sch_temps[3];
-  doc["f"] = sch_temps[4];
-  doc["g"] = sch_temps[5];
-
-  // Gemiddelde boilertemperatuur
   float KSAv = 0; int valid_count = 0;
   for (int i = 0; i < 6; i++) {
     if (sensor_ok[i] && sch_temps[i] > -100) { KSAv += sch_temps[i]; valid_count++; }
   }
-  doc["h"] = valid_count > 0 ? KSAv / valid_count : 0.0;
+  if (valid_count > 0) KSAv /= valid_count;
 
-  // Duty cycles
-  doc["i"] = (int)circuits[0].duty_cycle;
-  doc["j"] = (int)circuits[1].duty_cycle;
-  doc["k"] = (int)circuits[2].duty_cycle;
-  doc["l"] = (int)circuits[3].duty_cycle;
-  doc["m"] = (int)circuits[4].duty_cycle;
-  doc["n"] = (int)circuits[5].duty_cycle;
-  doc["o"] = (int)circuits[6].duty_cycle;
-
-  // Relay-staten
-  doc["p"] = circuits[0].heating_on ? 1 : 0;
-  doc["q"] = circuits[1].heating_on ? 1 : 0;
-  doc["r"] = circuits[2].heating_on ? 1 : 0;
-  doc["s"] = circuits[3].heating_on ? 1 : 0;
-  doc["t"] = circuits[4].heating_on ? 1 : 0;
-  doc["u"] = circuits[5].heating_on ? 1 : 0;
-  doc["v"] = circuits[6].heating_on ? 1 : 0;
-
-  // Totaal vermogen + ventilatie
   float total_power = 0.0;
   for (int i = 0; i < circuits_num; i++)
     if (circuits[i].heating_on) total_power += circuits[i].power_kw;
-  doc["w"] = total_power;
-  doc["x"] = vent_percent;
 
-  // SCH pomp: aan als relay LOW, eco-state actief, of manual override ON
   bool sch_on = (mcp_available && mcp.digitalRead(RELAY_PUMP_SCH) == LOW)
              || (eco_pump_state == ECO_PUMP_SCH)
              || (sch_pump_manual && sch_pump_manual_on
                  && millis() - sch_pump_manual_start < MANUAL_PUMP_DURATION);
-  doc["y"]  = sch_on ? 1 : 0;
-  doc["z"]  = last_sch_pump.kwh_pumped;
-
-  // WON pomp: idem
   bool won_on = (mcp_available && mcp.digitalRead(RELAY_PUMP_WON) == LOW)
              || (eco_pump_state == ECO_PUMP_WON)
              || (won_pump_manual && won_pump_manual_on
                  && millis() - won_pump_manual_start < MANUAL_PUMP_DURATION);
-  doc["aa"] = won_on ? 1 : 0;
-  doc["ab"] = last_won_pump.kwh_pumped;
 
-  // Systeem info
-  doc["ac"] = WiFi.RSSI();
-  doc["ad"] = (ESP.getFreeHeap() * 100) / ESP.getHeapSize();
-  doc["ae"] = ESP.getMaxAllocHeap() / 1024;
-
-  String json;
-  serializeJson(doc, json);
-  return json;
+  snprintf(buf, sizeof(buf),
+    "{\"a\":%lu"
+    ",\"b\":%.4f,\"c\":%.4f,\"d\":%.4f,\"e\":%.4f,\"f\":%.4f,\"g\":%.4f"
+    ",\"h\":%.4f"
+    ",\"i\":%d,\"j\":%d,\"k\":%d,\"l\":%d,\"m\":%d,\"n\":%d,\"o\":%d"
+    ",\"p\":%d,\"q\":%d,\"r\":%d,\"s\":%d,\"t\":%d,\"u\":%d,\"v\":%d"
+    ",\"w\":%.2f,\"x\":%d"
+    ",\"y\":%d,\"z\":%.4f"
+    ",\"aa\":%d,\"ab\":%.4f"
+    ",\"ac\":%d,\"ad\":%lu,\"ae\":%lu}",
+    uptime_sec,
+    sch_temps[0], sch_temps[1], sch_temps[2],
+    sch_temps[3], sch_temps[4], sch_temps[5],
+    KSAv,
+    (int)circuits[0].duty_cycle, (int)circuits[1].duty_cycle,
+    (int)circuits[2].duty_cycle, (int)circuits[3].duty_cycle,
+    (int)circuits[4].duty_cycle, (int)circuits[5].duty_cycle,
+    (int)circuits[6].duty_cycle,
+    circuits[0].heating_on?1:0, circuits[1].heating_on?1:0,
+    circuits[2].heating_on?1:0, circuits[3].heating_on?1:0,
+    circuits[4].heating_on?1:0, circuits[5].heating_on?1:0,
+    circuits[6].heating_on?1:0,
+    total_power, max(vent_percent, vent_override_active ? vent_override_percent : 0),
+    sch_on?1:0, last_sch_pump.kwh_pumped,
+    won_on?1:0, last_won_pump.kwh_pumped,
+    (int)WiFi.RSSI(),
+    (unsigned long)((ESP.getFreeHeap() * 100UL) / ESP.getHeapSize()),
+    (unsigned long)(ESP.getMaxAllocHeap() / 1024)
+  );
+  return buf;
 }
 
 
@@ -1278,13 +1284,15 @@ void setupWebServer() {
     streamMainPage(request);
   });
 
-  // v1.12: /json = compacte flat logdata (Google Sheets), /json_ui = circuits voor webpagina
+  // v1.13: buildLogJson() = static char buf, geen heap-allocatie
   server.on("/json", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(200, "application/json", getLogData());
+    request->send(200, "application/json", buildLogJson());
   });
 
   server.on("/json_ui", HTTP_GET, [](AsyncWebServerRequest *request){
-    StaticJsonDocument<2048> doc;
+    // v1.13: serializeJson direct naar stream — geen tussenstap String
+    AsyncResponseStream* p = request->beginResponseStream("application/json");
+    JsonDocument doc;
     JsonArray jc = doc.to<JsonArray>();
     for (int i = 0; i < circuits_num; i++) {
       JsonObject c = jc.createNestedObject();
@@ -1313,14 +1321,15 @@ void setupWebServer() {
       else
         c["tstat"] = nullptr;
     }
-    String json;
-    serializeJson(doc, json);
-    request->send(200, "application/json", json);
+    serializeJson(doc, *p);
+    request->send(p);
   });
 
   // v1.10: /json_settings — circuit-config als JSON voor hybrid /settings pagina
   server.on("/json_settings", HTTP_GET, [](AsyncWebServerRequest *request){
-    StaticJsonDocument<2048> doc;
+    // v1.13: serializeJson direct naar stream — geen tussenstap String
+    AsyncResponseStream* p = request->beginResponseStream("application/json");
+    JsonDocument doc;
     doc["room_id"]        = room_id;
     doc["wifi_ssid"]      = wifi_ssid;
     doc["wifi_pass"]      = wifi_pass;
@@ -1335,9 +1344,10 @@ void setupWebServer() {
     doc["eco_max_temp"]   = eco_max_temp;
     doc["boiler_ref_temp"]    = boiler_ref_temp;
     doc["boiler_layer_volume"] = boiler_layer_volume;
-    JsonArray nicks = doc.createNestedArray("sensor_nicknames");
+    doc["gas_url"]            = gas_url;
+    JsonArray nicks = doc["sensor_nicknames"].to<JsonArray>();
     for (int i = 0; i < 6; i++) nicks.add(sensor_nicknames[i]);
-    JsonArray circs = doc.createNestedArray("circuits");
+    JsonArray circs = doc["circuits"].to<JsonArray>();
     for (int i = 0; i < circuits_num; i++) {
       JsonObject c = circs.createNestedObject();
       c["name"]     = circuits[i].name;
@@ -1347,13 +1357,23 @@ void setupWebServer() {
       c["has_tstat"]= circuits[i].has_tstat;
       c["tstat_pin"]= circuits[i].tstat_pin;
     }
-    String json;
-    serializeJson(doc, json);
-    request->send(200, "application/json", json);
+    serializeJson(doc, *p);
+    request->send(p);
   });
 
   server.on("/scan", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(200, "application/json", getWifiScanJson());
+    // v1.13: inline stream, geen getWifiScanJson() String meer
+    AsyncResponseStream* p = request->beginResponseStream("application/json");
+    int n = WiFi.scanNetworks();
+    JsonDocument doc;
+    JsonArray networks = doc["networks"].to<JsonArray>();
+    for (int i = 0; i < n && i < 10; i++) {
+      JsonObject net = networks.createNestedObject();
+      net["ssid"] = WiFi.SSID(i);
+      net["rssi"] = WiFi.RSSI(i);
+    }
+    serializeJson(doc, *p);
+    request->send(p);
   });
 
   server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -1551,6 +1571,8 @@ void setupWebServer() {
       "<td><input type='number' step='0.1' name='boiler_ref_temp' id='f_bref' style='width:100%;'></td></tr>"));
     p->print(F("<tr><td>Boiler vol/laag (L)</td>"
       "<td><input type='number' step='1' name='boiler_volume' id='f_bvol' style='width:100%;'></td></tr>"));
+    p->print(F("<tr><td>Google Script URL</td>"
+      "<td><input type='text' name='gas_url' id='f_gas' placeholder='https://script.google.com/...' style='width:100%;'></td></tr>"));
     p->print(F("</table>"));
 
     // Sensor nicknames placeholder
@@ -1581,6 +1603,7 @@ void setupWebServer() {
         "document.getElementById('f_emax').value=d.eco_max_temp||90;"
         "document.getElementById('f_bref').value=d.boiler_ref_temp||20;"
         "document.getElementById('f_bvol').value=d.boiler_layer_volume||50;"
+        "document.getElementById('f_gas').value=d.gas_url||'';"
         // Sensor nicknames
         "let nh='';"
         "if(d.sensor_nicknames)d.sensor_nicknames.forEach((n,i)=>{"
@@ -1629,6 +1652,7 @@ void setupWebServer() {
     if (request->hasArg("eco_max_temp")) preferences.putFloat(NVS_ECO_MAX_TEMP, request->arg("eco_max_temp").toFloat());
     if (request->hasArg("boiler_ref_temp")) preferences.putFloat(NVS_BOILER_REF_TEMP, request->arg("boiler_ref_temp").toFloat());
     if (request->hasArg("boiler_volume")) preferences.putFloat(NVS_BOILER_VOLUME, request->arg("boiler_volume").toFloat());
+    if (request->hasArg("gas_url"))       preferences.putString(NVS_GAS_URL,      request->arg("gas_url"));
     
     for (int i = 0; i < 6; i++) {
       String param = "sensor_nick_" + String(i);
@@ -1903,6 +1927,7 @@ void matterNuclearReset() {
   float   bk_eco_max_temp      = preferences.getFloat ("eco_max_temp",     eco_max_temp);
   float   bk_boiler_ref_temp   = preferences.getFloat ("boiler_ref_temp",  boiler_ref_temp);
   float   bk_boiler_volume     = preferences.getFloat ("boiler_volume",    boiler_layer_volume);
+  String  bk_gas_url           = preferences.getString(NVS_GAS_URL,        gas_url);
   float   bk_tot_sch_kwh       = preferences.getFloat (NVS_TOTAL_SCH_KWH, 0.0);
   float   bk_tot_won_kwh       = preferences.getFloat (NVS_TOTAL_WON_KWH, 0.0);
 
@@ -1958,6 +1983,7 @@ void matterNuclearReset() {
   preferences.putFloat ("eco_max_temp",  bk_eco_max_temp);
   preferences.putFloat ("boiler_ref_temp", bk_boiler_ref_temp);
   preferences.putFloat ("boiler_volume", bk_boiler_volume);
+  preferences.putString(NVS_GAS_URL,     bk_gas_url);
   preferences.putFloat (NVS_TOTAL_SCH_KWH, bk_tot_sch_kwh);
   preferences.putFloat (NVS_TOTAL_WON_KWH, bk_tot_won_kwh);
   for (int i = 0; i < 6; i++)
@@ -2077,6 +2103,7 @@ void setup() {
   poll_interval = preferences.getInt(NVS_POLL_INTERVAL, 10);
   strlcpy(eco_controller_ip,   preferences.getString(NVS_ECO_IP,   "").c_str(),  sizeof(eco_controller_ip));
   strlcpy(eco_controller_mdns, preferences.getString(NVS_ECO_MDNS, "eco").c_str(), sizeof(eco_controller_mdns));
+  strlcpy(gas_url,             preferences.getString(NVS_GAS_URL,  "").c_str(),  sizeof(gas_url));
   eco_min_temp = preferences.getFloat(NVS_ECO_MIN_TEMP, 80.0);  // V53.5: Stop temp (was 60.0)
   eco_max_temp = preferences.getFloat(NVS_ECO_MAX_TEMP, 90.0);  // V53.5: Start temp (was 80.0)
   boiler_ref_temp = preferences.getFloat(NVS_BOILER_REF_TEMP, 20.0);
@@ -2153,6 +2180,20 @@ void setup() {
     if (strlen(circuits[i].mdns) > 0) Serial.printf(" [mDNS: %s]", circuits[i].mdns);
     Serial.printf(" [%.3f kW]\n", circuits[i].power_kw);
   }
+
+  // v1.13: Filter-documenten eenmalig initialiseren — kleine permanente allocatie
+  // voorkomt dat elke pollRooms/pollEcoBoiler een nieuw JsonDocument aanmaakt
+  room_filter_doc["y"]  = true;  // heat_request
+  room_filter_doc["z"]  = true;  // vent_request
+  room_filter_doc["aa"] = true;  // setpoint
+  room_filter_doc["h"]  = true;  // room_temp
+  room_filter_doc["af"] = true;  // home_status
+  eco_filter_doc["EAv"]   = true;
+  eco_filter_doc["EQtot"] = true;
+  eco_filter_doc["ETopH"] = true;
+  eco_filter_doc["EBotL"] = true;
+  poll_filters_initialized = true;
+  Serial.println(F("[v1.13] Poll-filters geïnitialiseerd"));
 
   // WiFi verbinding met 20s timeout per poging
   WiFi.mode(WIFI_STA);
@@ -2445,6 +2486,12 @@ void loop() {
   pollRooms();
   pollEcoBoiler();
   handleEcoPumps();
+
+  // v1.13: Google Sheets push elke 5 minuten
+  if (strlen(gas_url) > 0 && millis() - last_gas_push >= 300000UL) {
+    last_gas_push = millis();
+    pushToGoogleSheets();
+  }
 
   // ── Matter update elke 5s ────────────────────────────────────────────────
   if (!ap_mode_active && millis() - last_matter_update > 5000) {
