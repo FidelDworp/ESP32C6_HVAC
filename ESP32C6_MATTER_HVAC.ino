@@ -4,7 +4,10 @@ Thuis bereikbaar op static IP http://192.168.0.70  (mDNS verwijderd — conflict
 
 Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
 
-13mar26       Version v 1.14: Logica voor ventilatiebeheer en JSON, IO pin bediening herzien.,
+13mar26       Version v 1.14: Logica voor ventilatiebeheer en JSON, IO pin bediening herzien.
+              Circuit override handlers schakelen relay onmiddellijk (mcp.digitalWrite + matter sync),
+              niet meer wachten op pollcyclus. Cancel override herstelt relay naar auto-staat direct.
+              Ventilatie effective = max(vent_rooms, vent_hvac_minimum) — pin en JSON altijd identiek.
 12mar26       Version v 1.13: ArduinoJson v7 heap-fix: StaticJsonDocument volledig weg,
               globale JsonDocuments met clear() hergebruik voor pollRooms/pollEcoBoiler,
               buildLogJson() = pure snprintf static char buf (nul heap-alloc),
@@ -12,7 +15,7 @@ Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
               /json_ui + /json_settings + /scan streamen direct via AsyncResponseStream.
 12mar26       Version v 1.12: matter_boiler_bot + matter_alles_auto verwijderd (~7KB heap),
               /json gesplitst: compact a/b/c-keys voor Sheets, /json_ui circuits voor webpagina,
-              KW/ECO-velden uit JSON weg, SCH/WON pompstaat correct (relay+auto+manual),
+              KW* /ECO-velden uit JSON weg, SCH/WON pompstaat correct (relay+auto+manual),
               RSSI/heap/heap_block toegevoegd aan JSON, crash-log String→char[].
 12mar26       Version v 1.11: Heap-optimalisaties: globale String→char[] (room_id/wifi/eco_ip/sensor_nicks),
               getPumpStatusMessage() verwijderd (status-banner weg), /matter chunked streaming (~3KB),
@@ -36,11 +39,11 @@ Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
 10jan26 08:30 Version v 1.1: UI & JSON Improvements
 */
 
-
-// ============== DEEL 1/5: HEADERS, STRUCTS & HELPER FUNCTIES ==============
-
 // v1.7 FIX 1: Verplicht voor ESP32-C6 (RISC-V) in Arduino IDE — zonder dit werkt Serial niet correct
 #define Serial Serial0
+
+
+// ============== DEEL 1/5: HEADERS, STRUCTS & HELPER FUNCTIES ==============
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>   // v1.13: HTTPS voor Google Apps Script push
@@ -1700,8 +1703,15 @@ void setupWebServer() {
       int idx = request->arg("circuit").toInt();
       if (idx >= 0 && idx < circuits_num) {
         circuits[idx].override_active = true;
-        circuits[idx].override_state = true;
-        circuits[idx].override_start = millis();
+        circuits[idx].override_state  = true;
+        circuits[idx].override_start  = millis();
+        circuits[idx].heating_on      = true;
+        // v1.14: relay onmiddellijk schakelen — niet wachten op pollcyclus
+        if (mcp_available) mcp.digitalWrite(idx, LOW);
+        ignore_callbacks = true;
+        matter_circuit[idx].setOnOff(true);
+        ignore_callbacks = false;
+        Serial.printf("[OVERRIDE] c%d → ON (relay onmiddellijk)\n", idx + 1);
       }
     }
     request->send(200, "text/plain", "OK");
@@ -1712,8 +1722,15 @@ void setupWebServer() {
       int idx = request->arg("circuit").toInt();
       if (idx >= 0 && idx < circuits_num) {
         circuits[idx].override_active = true;
-        circuits[idx].override_state = false;
-        circuits[idx].override_start = millis();
+        circuits[idx].override_state  = false;
+        circuits[idx].override_start  = millis();
+        circuits[idx].heating_on      = false;
+        // v1.14: relay onmiddellijk schakelen — niet wachten op pollcyclus
+        if (mcp_available) mcp.digitalWrite(idx, HIGH);
+        ignore_callbacks = true;
+        matter_circuit[idx].setOnOff(false);
+        ignore_callbacks = false;
+        Serial.printf("[OVERRIDE] c%d → OFF (relay onmiddellijk)\n", idx + 1);
       }
     }
     request->send(200, "text/plain", "OK");
@@ -1724,6 +1741,12 @@ void setupWebServer() {
       int idx = request->arg("circuit").toInt();
       if (idx >= 0 && idx < circuits_num) {
         circuits[idx].override_active = false;
+        // v1.14: relay onmiddellijk terugzetten naar auto-staat
+        if (mcp_available) mcp.digitalWrite(idx, circuits[idx].heating_on ? LOW : HIGH);
+        ignore_callbacks = true;
+        matter_circuit[idx].setOnOff(circuits[idx].heating_on);
+        ignore_callbacks = false;
+        Serial.printf("[OVERRIDE] c%d → AUTO (relay onmiddellijk)\n", idx + 1);
       }
     }
     request->send(200, "text/plain", "OK");
