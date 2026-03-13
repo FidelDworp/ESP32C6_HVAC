@@ -5,8 +5,11 @@ Thuis bereikbaar op static IP http://192.168.0.70  (mDNS verwijderd — conflict
 Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
 
 13mar26       Version v 1.15: TSTAT hardware pins (10/11/12) snelcheck elke 100ms in loop(),
-              flankdetectie via tstat_last_state[], relay onmiddellijk schakelen bij TSTAT-wijziging,
-              override-staat heeft voorrang over TSTAT.
+              flankdetectie via tstat_last_state[], relay onmiddellijk bij TSTAT-wijziging,
+              override heeft voorrang. Ventilatie max()-logica consistent doorgevoerd in
+              set_vent handler, check_vent_override() en update_matter_sensors(). CSS fix:
+              header-row td.value achtergrond blauw (specificiteitsconflict opgelost).
+              NVS-keys via snprintf char buf i.p.v. String(i) (heap-allocs bij boot weg).
 13mar26       Version v 1.14: Circuit override handlers schakelen relay onmiddellijk
               (mcp.digitalWrite + matter sync), niet meer wachten op pollcyclus.
               Cancel override herstelt relay naar auto-staat direct.
@@ -18,7 +21,7 @@ Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
               /json_ui + /json_settings + /scan streamen direct via AsyncResponseStream.
 12mar26       Version v 1.12: matter_boiler_bot + matter_alles_auto verwijderd (~7KB heap),
               /json gesplitst: compact a/b/c-keys voor Sheets, /json_ui circuits voor webpagina,
-              KW* /ECO-velden uit JSON weg, SCH/WON pompstaat correct (relay+auto+manual),
+              KW* / ECO-velden uit JSON weg, SCH/WON pompstaat correct (relay+auto+manual),
               RSSI/heap/heap_block toegevoegd aan JSON, crash-log String→char[].
 12mar26       Version v 1.11: Heap-optimalisaties: globale String→char[] (room_id/wifi/eco_ip/sensor_nicks),
               getPumpStatusMessage() verwijderd (status-banner weg), /matter chunked streaming (~3KB),
@@ -1026,7 +1029,7 @@ void streamMainPage(AsyncWebServerRequest* request) {
     "table{width:100%;border-collapse:collapse;margin-bottom:15px;}"
     "td.label{color:#369;font-size:13px;padding:8px 5px;border-bottom:1px solid #ddd;text-align:left;}"
     "td.value{background:#e6f0ff;font-size:13px;padding:8px 5px;border-bottom:1px solid #ddd;text-align:center;}"
-    "tr.header-row{background:#336699;color:#fff;}tr.header-row td{color:#fff;font-weight:bold;padding:10px 5px;font-size:12px;}"
+    "tr.header-row td,tr.header-row td.label,tr.header-row td.value{background:#336699;color:#fff;font-weight:bold;padding:10px 5px;font-size:12px;}"
     ".status-ok{color:#0a0;font-weight:bold;}.status-na{color:#c00;font-weight:bold;}.status-away{color:#f80;font-weight:bold;}"
     ".eco-status-badge{display:inline-block;padding:4px 12px;border-radius:4px;font-weight:bold;font-size:12px;margin-left:10px;}"
     ".eco-online{background:#0a0;color:#fff;}.eco-offline{background:#c00;color:#fff;}"
@@ -1662,39 +1665,48 @@ void setupWebServer() {
     if (request->hasArg("boiler_volume")) preferences.putFloat(NVS_BOILER_VOLUME, request->arg("boiler_volume").toFloat());
     if (request->hasArg("gas_url"))       preferences.putString(NVS_GAS_URL,      request->arg("gas_url"));
     
+    // v1.15: snprintf i.p.v. String(i) voor NVS-keys en form-args
+    char sKey[24]; char sArg[32];
     for (int i = 0; i < 6; i++) {
-      String param = "sensor_nick_" + String(i);
-      if (request->hasArg(param.c_str())) {
-        String nick = request->arg(param.c_str());
-        nick.trim();
-        if (nick.length() == 0) nick = "Sensor " + String(i + 1);
-        preferences.putString((String(NVS_SENSOR_NICK_BASE) + i).c_str(), nick);
+      snprintf(sArg, sizeof(sArg), "sensor_nick_%d", i);
+      if (request->hasArg(sArg)) {
+        String nick = request->arg(sArg); nick.trim();
+        if (nick.length() == 0) { snprintf(sArg, sizeof(sArg), "Sensor %d", i + 1); nick = sArg; }
+        snprintf(sKey, sizeof(sKey), "%s%d", NVS_SENSOR_NICK_BASE, i);
+        preferences.putString(sKey, nick);
       }
     }
-    
+
     int save_count = request->arg("circuits_num").toInt();
     if (save_count < 1) save_count = 1;
-    if (save_count > 7) save_count = 7;  // v1.9: max 7 i.p.v. 16
+    if (save_count > 7) save_count = 7;
 
     for (int i = 0; i < save_count; i++) {
-      String name_val = request->arg(("circuit_name_" + String(i)).c_str());
-      if (name_val.length() == 0) name_val = "Circuit " + String(i + 1);
-      preferences.putString(("c" + String(i) + "_name").c_str(), name_val);
-      preferences.putString(("c" + String(i) + "_ip").c_str(), request->arg(("circuit_ip_" + String(i)).c_str()));
-      
-      String mdns_val = request->arg(("circuit_mdns_" + String(i)).c_str());
-      mdns_val.replace(".local", "");
-      mdns_val.trim();
-      preferences.putString(("c" + String(i) + "_mdns").c_str(), mdns_val);
-      preferences.putFloat(("c" + String(i) + "_power").c_str(), request->arg(("circuit_power_" + String(i)).c_str()).toFloat());
-      preferences.putBool(("c" + String(i) + "_tstat").c_str(), request->hasArg(("circuit_tstat_" + String(i)).c_str()));
-      
+      snprintf(sArg, sizeof(sArg), "circuit_name_%d", i);
+      String name_val = request->arg(sArg);
+      if (name_val.length() == 0) { snprintf(sArg, sizeof(sArg), "Circuit %d", i+1); name_val = sArg; }
+      snprintf(sKey, sizeof(sKey), "c%d_name", i); preferences.putString(sKey, name_val);
+
+      snprintf(sArg, sizeof(sArg), "circuit_ip_%d", i);
+      snprintf(sKey, sizeof(sKey), "c%d_ip", i);   preferences.putString(sKey, request->arg(sArg));
+
+      snprintf(sArg, sizeof(sArg), "circuit_mdns_%d", i);
+      String mdns_val = request->arg(sArg); mdns_val.replace(".local", ""); mdns_val.trim();
+      snprintf(sKey, sizeof(sKey), "c%d_mdns", i); preferences.putString(sKey, mdns_val);
+
+      snprintf(sArg, sizeof(sArg), "circuit_power_%d", i);
+      snprintf(sKey, sizeof(sKey), "c%d_power", i); preferences.putFloat(sKey, request->arg(sArg).toFloat());
+
+      snprintf(sArg, sizeof(sArg), "circuit_tstat_%d", i);
+      snprintf(sKey, sizeof(sKey), "c%d_tstat", i); preferences.putBool(sKey, request->hasArg(sArg));
+
       int pin_val = 255;
-      if (request->hasArg(("circuit_tstat_pin_" + String(i)).c_str())) {
-        pin_val = request->arg(("circuit_tstat_pin_" + String(i)).c_str()).toInt();
+      snprintf(sArg, sizeof(sArg), "circuit_tstat_pin_%d", i);
+      if (request->hasArg(sArg)) {
+        pin_val = request->arg(sArg).toInt();
         if (pin_val != 10 && pin_val != 11 && pin_val != 12) pin_val = 255;
       }
-      preferences.putInt(("c" + String(i) + "_pin").c_str(), pin_val);
+      snprintf(sKey, sizeof(sKey), "c%d_pin", i); preferences.putInt(sKey, pin_val);
     }
 
     Serial.println("Settings saved!");
@@ -1843,15 +1855,16 @@ void setupWebServer() {
       if (pct == 0) {
         vent_override_active  = false;
         vent_override_percent = 0;
-        ledcWrite(VENT_FAN_PIN, 0);
         Serial.println("[UI] Vent override uitgeschakeld → auto");
       } else {
         vent_override_start   = millis();
         vent_override_active  = true;
         vent_override_percent = pct;
-        ledcWrite(VENT_FAN_PIN, map(pct, 0, 100, 0, 255));
         Serial.printf("[UI] Vent override → %d%%\n", pct);
       }
+      // v1.15: altijd max(rooms, override) schrijven — consistent met pollRooms en JSON
+      int eff = max(vent_percent, vent_override_active ? vent_override_percent : 0);
+      ledcWrite(VENT_FAN_PIN, map(eff, 0, 100, 0, 255));
     }
     request->send(200, "text/plain", "OK");
   });
@@ -1879,8 +1892,9 @@ void check_vent_override() {
       millis() - vent_override_start > VENT_OVERRIDE_DURATION) {
     vent_override_active  = false;
     vent_override_percent = 0;
-    ledcWrite(VENT_FAN_PIN, 0);  // Override vervallen → pin direct naar 0
-    Serial.println(F("[OVERRIDE] Ventilatie — vervallen na 3u, terug naar auto"));
+    // v1.15: terugval naar rooms-waarde, niet naar 0
+    ledcWrite(VENT_FAN_PIN, map(vent_percent, 0, 100, 0, 255));
+    Serial.printf(F("[OVERRIDE] Ventilatie — vervallen na 3u, terug naar rooms (%d%%)\n"), vent_percent);
   }
 }
 
@@ -1892,10 +1906,9 @@ void update_matter_sensors() {
   matter_boiler_top.setTemperature(sch_temps[0]);
   // v1.12: matter_boiler_bot verwijderd
 
-  // Fan: snelheidsfeedback → HomeKit
-  // In auto mode ook mode updaten (anders bevriest slider op 0 in Home app)
+  // Fan: snelheidsfeedback → HomeKit — v1.15: zelfde max() formule als pin en JSON
   ignore_callbacks = true;
-  int effective_vent = vent_override_active ? vent_override_percent : vent_percent;
+  int effective_vent = max(vent_percent, vent_override_active ? vent_override_percent : 0);
   matter_vent.setSpeedPercent((uint8_t)effective_vent);
   if (!vent_override_active) {
     matter_vent.setMode(effective_vent > 0
@@ -1960,8 +1973,12 @@ void matterNuclearReset() {
   float   bk_tot_won_kwh       = preferences.getFloat (NVS_TOTAL_WON_KWH, 0.0);
 
   String bk_nick[6];
-  for (int i = 0; i < 6; i++)
-    bk_nick[i] = preferences.getString(("sensor_nick_" + String(i)).c_str(), "Sensor " + String(i+1));
+  for (int i = 0; i < 6; i++) {
+    char bNickKey[24]; char bNickDef[16];
+    snprintf(bNickKey, sizeof(bNickKey), "sensor_nick_%d", i);
+    snprintf(bNickDef, sizeof(bNickDef), "Sensor %d", i+1);
+    bk_nick[i] = preferences.getString(bNickKey, bNickDef);
+  }
 
   // Circuit backup
   struct CircuitBackup {
@@ -1969,17 +1986,19 @@ void matterNuclearReset() {
     float power_kw; bool has_tstat; int tstat_pin;
   } bk_circ[7];
   int bk_num = min(bk_circuits_num, 7);
+  char bKey[24];
   for (int i = 0; i < bk_num; i++) {
     String tmp;
-    tmp = preferences.getString(("c" + String(i) + "_name").c_str(), "Circuit " + String(i+1));
-    strlcpy(bk_circ[i].name, tmp.c_str(), 32);
-    tmp = preferences.getString(("c" + String(i) + "_ip").c_str(), "");
-    strlcpy(bk_circ[i].ip, tmp.c_str(), 20);
-    tmp = preferences.getString(("c" + String(i) + "_mdns").c_str(), "");
-    strlcpy(bk_circ[i].mdns, tmp.c_str(), 32);
-    bk_circ[i].power_kw  = preferences.getFloat(("c" + String(i) + "_power").c_str(), 0.0);
-    bk_circ[i].has_tstat = preferences.getBool (("c" + String(i) + "_tstat").c_str(), false);
-    bk_circ[i].tstat_pin = preferences.getInt  (("c" + String(i) + "_pin").c_str(),   255);
+    snprintf(bKey, sizeof(bKey), "c%d_name", i);
+    char defName[16]; snprintf(defName, sizeof(defName), "Circuit %d", i+1);
+    tmp = preferences.getString(bKey, defName); strlcpy(bk_circ[i].name, tmp.c_str(), 32);
+    snprintf(bKey, sizeof(bKey), "c%d_ip", i);
+    tmp = preferences.getString(bKey, "");       strlcpy(bk_circ[i].ip,   tmp.c_str(), 20);
+    snprintf(bKey, sizeof(bKey), "c%d_mdns", i);
+    tmp = preferences.getString(bKey, "");       strlcpy(bk_circ[i].mdns, tmp.c_str(), 32);
+    snprintf(bKey, sizeof(bKey), "c%d_power", i);  bk_circ[i].power_kw  = preferences.getFloat(bKey, 0.0);
+    snprintf(bKey, sizeof(bKey), "c%d_tstat", i);  bk_circ[i].has_tstat = preferences.getBool (bKey, false);
+    snprintf(bKey, sizeof(bKey), "c%d_pin",   i);  bk_circ[i].tstat_pin = preferences.getInt  (bKey, 255);
   }
   preferences.end();
   Serial.println("  Settings in RAM geladen.");
@@ -2014,15 +2033,17 @@ void matterNuclearReset() {
   preferences.putString(NVS_GAS_URL,     bk_gas_url);
   preferences.putFloat (NVS_TOTAL_SCH_KWH, bk_tot_sch_kwh);
   preferences.putFloat (NVS_TOTAL_WON_KWH, bk_tot_won_kwh);
-  for (int i = 0; i < 6; i++)
-    preferences.putString(("sensor_nick_" + String(i)).c_str(), bk_nick[i]);
+  for (int i = 0; i < 6; i++) {
+    snprintf(bKey, sizeof(bKey), "sensor_nick_%d", i);
+    preferences.putString(bKey, bk_nick[i]);
+  }
   for (int i = 0; i < bk_num; i++) {
-    preferences.putString(("c" + String(i) + "_name").c_str(),  bk_circ[i].name);
-    preferences.putString(("c" + String(i) + "_ip").c_str(),    bk_circ[i].ip);
-    preferences.putString(("c" + String(i) + "_mdns").c_str(),  bk_circ[i].mdns);
-    preferences.putFloat (("c" + String(i) + "_power").c_str(), bk_circ[i].power_kw);
-    preferences.putBool  (("c" + String(i) + "_tstat").c_str(), bk_circ[i].has_tstat);
-    preferences.putInt   (("c" + String(i) + "_pin").c_str(),   bk_circ[i].tstat_pin);
+    snprintf(bKey, sizeof(bKey), "c%d_name",  i); preferences.putString(bKey, bk_circ[i].name);
+    snprintf(bKey, sizeof(bKey), "c%d_ip",    i); preferences.putString(bKey, bk_circ[i].ip);
+    snprintf(bKey, sizeof(bKey), "c%d_mdns",  i); preferences.putString(bKey, bk_circ[i].mdns);
+    snprintf(bKey, sizeof(bKey), "c%d_power", i); preferences.putFloat (bKey, bk_circ[i].power_kw);
+    snprintf(bKey, sizeof(bKey), "c%d_tstat", i); preferences.putBool  (bKey, bk_circ[i].has_tstat);
+    snprintf(bKey, sizeof(bKey), "c%d_pin",   i); preferences.putInt   (bKey, bk_circ[i].tstat_pin);
   }
   preferences.end();
   Serial.println("  Settings teruggeschreven.");
@@ -2168,27 +2189,33 @@ void setup() {
     Serial.printf("Last WON pump event: %.2f kWh\n", last_won_pump.kwh_pumped);
   }
 
+  // v1.15: snprintf i.p.v. String(i) — geen heap-alloc voor NVS-keys
+  char nvsKey[24];
   for (int i = 0; i < 6; i++) {
-    String tmp = preferences.getString(
-      (String(NVS_SENSOR_NICK_BASE) + i).c_str(),
-      "Sensor " + String(i + 1)
-    );
+    snprintf(nvsKey, sizeof(nvsKey), "%s%d", NVS_SENSOR_NICK_BASE, i);
+    char defNick[16]; snprintf(defNick, sizeof(defNick), "Sensor %d", i + 1);
+    String tmp = preferences.getString(nvsKey, defNick);
     strlcpy(sensor_nicknames[i], tmp.c_str(), 32);
   }
 
-  // v1.9: loop tot circuits_num (7) i.p.v. 16 — 9 lege slots = 27 onnodige heap-allocs weg
+  // v1.9: loop tot circuits_num (7) i.p.v. 16
   for (int i = 0; i < circuits_num; i++) {
-    // v1.9: getString() in tijdelijke String, dan strlcpy naar char[] in struct
-    String tmp;
-    tmp = preferences.getString(("c" + String(i) + "_name").c_str(), "Circuit " + String(i + 1));
+    char defName[16]; snprintf(defName, sizeof(defName), "Circuit %d", i + 1);
+    snprintf(nvsKey, sizeof(nvsKey), "c%d_name", i);
+    String tmp = preferences.getString(nvsKey, defName);
     strlcpy(circuits[i].name, tmp.c_str(), sizeof(circuits[i].name));
-    tmp = preferences.getString(("c" + String(i) + "_ip").c_str(), "");
+    snprintf(nvsKey, sizeof(nvsKey), "c%d_ip", i);
+    tmp = preferences.getString(nvsKey, "");
     strlcpy(circuits[i].ip, tmp.c_str(), sizeof(circuits[i].ip));
-    tmp = preferences.getString(("c" + String(i) + "_mdns").c_str(), "");
+    snprintf(nvsKey, sizeof(nvsKey), "c%d_mdns", i);
+    tmp = preferences.getString(nvsKey, "");
     strlcpy(circuits[i].mdns, tmp.c_str(), sizeof(circuits[i].mdns));
-    circuits[i].power_kw = preferences.getFloat(("c" + String(i) + "_power").c_str(), 0.0);
-    circuits[i].has_tstat = preferences.getBool(("c" + String(i) + "_tstat").c_str(), false);
-    circuits[i].tstat_pin = preferences.getInt(("c" + String(i) + "_pin").c_str(), 255);
+    snprintf(nvsKey, sizeof(nvsKey), "c%d_power", i);
+    circuits[i].power_kw  = preferences.getFloat(nvsKey, 0.0);
+    snprintf(nvsKey, sizeof(nvsKey), "c%d_tstat", i);
+    circuits[i].has_tstat = preferences.getBool(nvsKey, false);
+    snprintf(nvsKey, sizeof(nvsKey), "c%d_pin", i);
+    circuits[i].tstat_pin = preferences.getInt(nvsKey, 255);
 
     circuits[i].online = false;
     circuits[i].heating_on = false;
