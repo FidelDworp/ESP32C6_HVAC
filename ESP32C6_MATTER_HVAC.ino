@@ -4,6 +4,12 @@ Thuis bereikbaar op static IP http://192.168.0.70  (mDNS verwijderd — conflict
 
 Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
 
+13mar26       Version v 1.16: Sliding window duty% per circuit (12 slots × 20 min = 4u rollend).
+              duty_4h = representatief gemiddelde over laatste 4u → naar JSON/Sheets (keys i-o).
+              duty_cycle blijft instantaan (lopend slot) voor live UI. Struct uitgebreid met
+              dc_window[12], dc_slot, dc_slots_filled, dc_slot_start, dc_last_poll,
+              dc_slot_on, duty_4h. Delta-tijdmeting per poll (dc_last_poll) voorkomt
+              cumulatieve fout; clamp op 1200s per slot; noemer correct bij lege ring.
 13mar26       Version v 1.15: TSTAT hardware pins (10/11/12) snelcheck elke 100ms in loop(),
               flankdetectie via tstat_last_state[], relay onmiddellijk bij TSTAT-wijziging,
               override heeft voorrang. Ventilatie max()-logica consistent doorgevoerd in
@@ -124,7 +130,7 @@ struct Circuit {
   unsigned long on_time;
   unsigned long off_time;
   unsigned long last_change;
-  float duty_cycle;
+  float duty_cycle;   // instantaan (lopend slot) — voor live UI
   int setpoint;
   float room_temp;
   bool heat_request;
@@ -132,6 +138,14 @@ struct Circuit {
   bool override_active;
   bool override_state;
   unsigned long override_start;
+  // v1.16: sliding window duty% over 4u (12 slots × 20 min)
+  uint16_t dc_window[12];      // on-seconden per afgesloten slot (max 1200s → past in uint16)
+  uint8_t  dc_slot;            // huidig actief slot (0..11)
+  uint8_t  dc_slots_filled;    // aantal afgesloten slots (0..12), voor correcte noemer
+  uint32_t dc_slot_start;      // millis() bij start van huidig slot
+  uint32_t dc_last_poll;       // millis() bij vorige pollcyclus, voor delta-berekening
+  uint16_t dc_slot_on;         // on-seconden opgebouwd in huidig slot
+  float    duty_4h;            // rollend gemiddelde over gevulde slots → naar JSON/Sheets
 };
 
 struct EcoBoilerData {
@@ -877,6 +891,43 @@ void pollRooms() {
       circuits[i].duty_cycle = 100.0 * circuits[i].on_time / total;
     }
 
+    // v1.16: sliding window — on-seconden bijhouden in huidig slot
+    // Elke 20 minuten slot afsluiten en duty_4h herberekenen over alle gevulde slots
+    {
+      const uint32_t SLOT_MS  = 20UL * 60UL * 1000UL;   // 20 minuten per slot
+      const uint8_t  N_SLOTS  = 12;                       // 12 slots = 4 uur
+
+      uint32_t now_ms   = (uint32_t)millis();
+      uint32_t elapsed  = now_ms - circuits[i].dc_slot_start;
+
+      // Delta sinds vorige poll (niet since slot-start) — voorkomt cumulatieve optelling
+      uint32_t poll_delta_ms = now_ms - circuits[i].dc_last_poll;
+      circuits[i].dc_last_poll = now_ms;
+      uint16_t on_sec_this_poll = circuits[i].heating_on
+                                  ? (uint16_t)(poll_delta_ms / 1000UL)
+                                  : 0;
+      circuits[i].dc_slot_on += on_sec_this_poll;
+
+      // Slot verlopen? → afsluiten, volgende openen, duty_4h herberekenen
+      if (elapsed >= SLOT_MS) {
+        // Clamp op max slotduur (bij lange pollpauze)
+        uint16_t stored = min(circuits[i].dc_slot_on, (uint16_t)(SLOT_MS / 1000UL));
+        circuits[i].dc_window[circuits[i].dc_slot] = stored;
+        circuits[i].dc_slot       = (circuits[i].dc_slot + 1) % N_SLOTS;
+        circuits[i].dc_slot_start = now_ms;
+        circuits[i].dc_slot_on    = 0;
+
+        // Herbereken duty_4h: gemiddelde over alle gevulde slots
+        // dc_slots_filled telt afgesloten slots, geplafonneerd op N_SLOTS (ring vol)
+        if (circuits[i].dc_slots_filled < N_SLOTS) circuits[i].dc_slots_filled++;
+        uint32_t sum_on = 0;
+        for (uint8_t s = 0; s < N_SLOTS; s++) sum_on += circuits[i].dc_window[s];
+        // Noemer: dc_slots_filled × 1200s — correct ook als ring nog niet vol is
+        circuits[i].duty_4h = 100.0f * sum_on
+                              / ((float)circuits[i].dc_slots_filled * (SLOT_MS / 1000UL));
+      }
+    }
+
     if (circuits[i].heating_on) total_power += circuits[i].power_kw;
   }
   
@@ -951,10 +1002,10 @@ const char* buildLogJson() {
     sch_temps[0], sch_temps[1], sch_temps[2],
     sch_temps[3], sch_temps[4], sch_temps[5],
     KSAv,
-    (int)circuits[0].duty_cycle, (int)circuits[1].duty_cycle,
-    (int)circuits[2].duty_cycle, (int)circuits[3].duty_cycle,
-    (int)circuits[4].duty_cycle, (int)circuits[5].duty_cycle,
-    (int)circuits[6].duty_cycle,
+    (int)circuits[0].duty_4h, (int)circuits[1].duty_4h,
+    (int)circuits[2].duty_4h, (int)circuits[3].duty_4h,
+    (int)circuits[4].duty_4h, (int)circuits[5].duty_4h,
+    (int)circuits[6].duty_4h,
     circuits[0].heating_on?1:0, circuits[1].heating_on?1:0,
     circuits[2].heating_on?1:0, circuits[3].heating_on?1:0,
     circuits[4].heating_on?1:0, circuits[5].heating_on?1:0,
@@ -2225,6 +2276,14 @@ void setup() {
     circuits[i].last_change = millis();
     circuits[i].duty_cycle = 0.0;
     circuits[i].override_active = false;
+    // v1.16: sliding window initialiseren
+    memset(circuits[i].dc_window, 0, sizeof(circuits[i].dc_window));
+    circuits[i].dc_slot         = 0;
+    circuits[i].dc_slots_filled = 0;
+    circuits[i].dc_slot_start   = millis();
+    circuits[i].dc_last_poll    = millis();
+    circuits[i].dc_slot_on      = 0;
+    circuits[i].duty_4h         = 0.0;
   }
 
   Serial.println("\n=== Circuit Config ===");
