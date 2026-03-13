@@ -4,9 +4,12 @@ Thuis bereikbaar op static IP http://192.168.0.70  (mDNS verwijderd — conflict
 
 Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
 
-13mar26       Version v 1.14: Logica voor ventilatiebeheer en JSON, IO pin bediening herzien.
-              Circuit override handlers schakelen relay onmiddellijk (mcp.digitalWrite + matter sync),
-              niet meer wachten op pollcyclus. Cancel override herstelt relay naar auto-staat direct.
+13mar26       Version v 1.15: TSTAT hardware pins (10/11/12) snelcheck elke 100ms in loop(),
+              flankdetectie via tstat_last_state[], relay onmiddellijk schakelen bij TSTAT-wijziging,
+              override-staat heeft voorrang over TSTAT.
+13mar26       Version v 1.14: Circuit override handlers schakelen relay onmiddellijk
+              (mcp.digitalWrite + matter sync), niet meer wachten op pollcyclus.
+              Cancel override herstelt relay naar auto-staat direct.
               Ventilatie effective = max(vent_rooms, vent_hvac_minimum) — pin en JSON altijd identiek.
 12mar26       Version v 1.13: ArduinoJson v7 heap-fix: StaticJsonDocument volledig weg,
               globale JsonDocuments met clear() hergebruik voor pollRooms/pollEcoBoiler,
@@ -242,7 +245,9 @@ unsigned long last_slow = 0;
 bool ap_mode_active = false;
 bool mcp_available = false;
 
-// v1.13: Globale JsonDocuments — ArduinoJson v7 heap-alloceert altijd.
+// v1.15: TSTAT snelcheck — vorige staat bijhouden voor edge-detectie
+// Geïnitialiseerd op true (HIGH = open = uit) zodat LOW=GND onmiddellijk detecteerbaar is
+bool tstat_last_state[7] = {true, true, true, true, true, true, true};
 // Globaal + clear() = eenmalige allocatie, geen fragmentatie per poll-cyclus.
 JsonDocument room_poll_doc;
 JsonDocument eco_poll_doc;
@@ -2440,6 +2445,32 @@ void setup() {
   Serial.println("Ready!\n");
 }
 
+// v1.15: TSTAT snelcheck — aangeroepen elke 100ms vanuit loop()
+// Leest MCP-pins 10/11/12 direct, schakelt relay onmiddellijk bij flankwijziging.
+// Override-staat heeft voorrang: als override actief is, negeer TSTAT.
+void checkTstatPins() {
+  if (!mcp_available) return;
+  for (int i = 0; i < circuits_num; i++) {
+    if (!circuits[i].has_tstat) continue;
+    int pin = circuits[i].tstat_pin;
+    if (pin < 10 || pin > 12) continue;          // alleen hardware TSTAT-pins
+    if (circuits[i].override_active) continue;   // override heeft voorrang
+
+    bool tstat_on = (mcp.digitalRead(pin) == LOW);  // LOW = GND = thermostaat vraagt warmte
+    if (tstat_on == tstat_last_state[i]) continue;  // geen wijziging
+    tstat_last_state[i] = tstat_on;
+
+    // Flankwijziging gedetecteerd — relay onmiddellijk schakelen
+    circuits[i].heating_on = tstat_on;
+    mcp.digitalWrite(i, tstat_on ? LOW : HIGH);
+    ignore_callbacks = true;
+    matter_circuit[i].setOnOff(tstat_on);
+    ignore_callbacks = false;
+    Serial.printf("[TSTAT] c%d pin%d → %s (onmiddellijk)\n",
+                  i + 1, pin, tstat_on ? "AAN" : "UIT");
+  }
+}
+
 void loop() {
   if (ap_mode_active) dnsServer.processNextRequest();
 
@@ -2521,6 +2552,9 @@ void loop() {
     last_matter_update = millis();
     update_matter_sensors();
   }
+
+  // v1.15: TSTAT snelcheck elke 100ms — onmiddellijke relay-reactie op thermostaatwijziging
+  checkTstatPins();
 
   delay(100);
 }
