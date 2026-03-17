@@ -4,6 +4,9 @@ Thuis bereikbaar op static IP http://192.168.0.70  (mDNS verwijderd — conflict
 
 Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
 
+17mar26       Version v 1.17: Room JSON keys aangepast aan nieuwe room sketch structuur:
+              heat_request y→b, vent_request z→g, setpoint aa→c,
+              room_temp h→e, home_status af→v. Filter-doc bijgewerkt.
 13mar26       Version v 1.16: Sliding window duty% per circuit (12 slots × 20 min = 4u rollend).
               duty_4h = representatief gemiddelde over laatste 4u → naar JSON/Sheets (keys i-o).
               duty_cycle blijft instantaan (lopend slot) voor live UI. Struct uitgebreid met
@@ -812,11 +815,11 @@ void pollRooms() {
             circuits[i].last_seen = millis();
 
             if (!error) {
-              int   y_val  = room_poll_doc["y"]  | 0;
-              int   z_val  = room_poll_doc["z"]  | 0;
-              int   aa_val = room_poll_doc["aa"] | 0;
-              float h_val  = room_poll_doc["h"]  | 0.0f;
-              int   af_val = room_poll_doc["af"] | 0;
+              int   y_val  = room_poll_doc["b"]  | 0;
+              int   z_val  = room_poll_doc["g"]  | 0;
+              int   aa_val = room_poll_doc["c"]  | 0;
+              float h_val  = room_poll_doc["e"]  | 0.0f;
+              int   af_val = room_poll_doc["v"]  | 0;
 
               circuits[i].heat_request = (y_val == 1);
               circuits[i].vent_request = z_val;
@@ -2297,11 +2300,11 @@ void setup() {
 
   // v1.13: Filter-documenten eenmalig initialiseren — kleine permanente allocatie
   // voorkomt dat elke pollRooms/pollEcoBoiler een nieuw JsonDocument aanmaakt
-  room_filter_doc["y"]  = true;  // heat_request
-  room_filter_doc["z"]  = true;  // vent_request
-  room_filter_doc["aa"] = true;  // setpoint
-  room_filter_doc["h"]  = true;  // room_temp
-  room_filter_doc["af"] = true;  // home_status
+  room_filter_doc["b"]  = true;  // heat_request (Heating_on)
+  room_filter_doc["g"]  = true;  // vent_request (Vent_percent)
+  room_filter_doc["c"]  = true;  // setpoint (Heating_setpoint)
+  room_filter_doc["e"]  = true;  // room_temp (Temp1 DHT22)
+  room_filter_doc["v"]  = true;  // home_status (Home switch)
   eco_filter_doc["EAv"]   = true;
   eco_filter_doc["EQtot"] = true;
   eco_filter_doc["ETopH"] = true;
