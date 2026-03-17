@@ -4,6 +4,9 @@ Thuis bereikbaar op static IP http://192.168.0.70  (mDNS verwijderd — conflict
 
 Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
 
+17mar26       Version v 1.18: ECO JSON keys aangepast aan nieuwe ECO sketch structuur:
+              temp_top ETopH→b, temp_bottom EBotL→g, temp_avg EAv→h, qtot EQtot→i.
+              Filter-doc bijgewerkt.
 17mar26       Version v 1.17: Room JSON keys aangepast aan nieuwe room sketch structuur:
               heat_request y→b, vent_request z→g, setpoint aa→c,
               room_temp h→e, home_status af→v. Filter-doc bijgewerkt.
@@ -445,10 +448,10 @@ void pollEcoBoiler() {
     eco_boiler.last_seen = millis();
 
     if (!error) {
-      eco_boiler.temp_avg    = eco_poll_doc["EAv"]   | 0.0;
-      eco_boiler.qtot        = eco_poll_doc["EQtot"] | 0.0;
-      eco_boiler.temp_top    = eco_poll_doc["ETopH"] | 0.0;
-      eco_boiler.temp_bottom = eco_poll_doc["EBotL"] | 0.0;
+      eco_boiler.temp_avg    = eco_poll_doc["h"]  | 0.0;
+      eco_boiler.qtot        = eco_poll_doc["i"]  | 0.0;
+      eco_boiler.temp_top    = eco_poll_doc["b"]  | 0.0;
+      eco_boiler.temp_bottom = eco_poll_doc["g"]  | 0.0;
       eco_qtot = eco_boiler.qtot;
       Serial.printf("    ETopH=%.1f°C EQtot=%.2f kWh EBotL=%.1f°C\n",
         eco_boiler.temp_top, eco_boiler.qtot, eco_boiler.temp_bottom);
@@ -2305,10 +2308,10 @@ void setup() {
   room_filter_doc["c"]  = true;  // setpoint (Heating_setpoint)
   room_filter_doc["e"]  = true;  // room_temp (Temp1 DHT22)
   room_filter_doc["v"]  = true;  // home_status (Home switch)
-  eco_filter_doc["EAv"]   = true;
-  eco_filter_doc["EQtot"] = true;
-  eco_filter_doc["ETopH"] = true;
-  eco_filter_doc["EBotL"] = true;
+  eco_filter_doc["b"]  = true;  // temp_top    (ETopH)
+  eco_filter_doc["g"]  = true;  // temp_bottom (EBotL)
+  eco_filter_doc["h"]  = true;  // temp_avg    (EAv)
+  eco_filter_doc["i"]  = true;  // qtot        (EQtot)
   poll_filters_initialized = true;
   Serial.println(F("[v1.13] Poll-filters geïnitialiseerd"));
 
