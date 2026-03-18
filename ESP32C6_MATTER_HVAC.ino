@@ -4,6 +4,8 @@ Thuis bereikbaar op static IP http://192.168.0.70  (mDNS verwijderd — conflict
 
 Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
 
+18mar26       Version v1.19: Matter onChangeOnOff callback: mcp.digitalWrite() onmiddellijk toegevoegd.
+               — relais reageren nu direct vanuit Apple Home, niet na volgende pollcyclus
 17mar26       Version v 1.18: ECO JSON keys aangepast aan nieuwe ECO sketch structuur:
               temp_top ETopH→b, temp_bottom EBotL→g, temp_avg EAv→h, qtot EQtot→i.
               Filter-doc bijgewerkt.
@@ -2426,7 +2428,10 @@ void setup() {
         circuits[i].override_start  = millis();
         circuits[i].override_active = true;
         circuits[i].override_state  = on_off;
-        Serial.printf("[HomeKit] Kring %d '%s' → override %s (10m)\n",
+        circuits[i].heating_on      = on_off;
+        // v1.19: relay onmiddellijk schakelen vanuit HomeKit — niet wachten op pollcyclus
+        if (mcp_available) mcp.digitalWrite(i, on_off ? LOW : HIGH);
+        Serial.printf("[HomeKit] Kring %d '%s' → override %s (relay onmiddellijk)\n",
                       i + 1, circuits[i].name, on_off ? "AAN" : "UIT");
         return true;
       });
