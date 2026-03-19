@@ -1,16 +1,30 @@
 // ============================================================
-// HVAC CONTROLLER DATA LOGGER - Google Apps Script v4
+// HVAC CONTROLLER DATA LOGGER - Google Apps Script v5
 // Ontvangt JSON-push van de HVAC ESP32 en logt naar Google Sheet
+//
+// v5 (18mar26):
+//   - 2 bevroren rijen: rij 1 = titel+URL, rij 2 = kolomtitels
+//   - MAX_ROWS limiet toegevoegd (default 1000)
+//   - HEADER_ROWS = 2 constante voor consistentie
+//   - doPost() verwijdert oudste rij op rij 3 (niet rij 2)
 //
 // v4 — aangepast voor compacte a/b/c JSON-keys (ESP32 v1.12)
 //   Kolommen: Tijdstempel + 32 datavelden (A t/m AF)
-//   ECO-velden verwijderd (komen uit ECO controller)
-//   Nieuw: SCH/WON pomp, kWh, RSSI, Free heap, Heap block
 //
 // INSTALLATIE:
 //   1. Voer setupHeaders() eenmalig uit
 //   2. Implementeren → Web-app → Toegang: Iedereen → URL opslaan
 // ============================================================
+
+// ============================================================
+// ⚙️  CONFIGURATIE — pas hier aan zonder de rest aan te raken
+// ============================================================
+const MAX_ROWS    = 1000;  // Maximum aantal datarijen (excl. headers)
+                           // Oudste rijen worden verwijderd als limiet bereikt
+const HEADER_ROWS = 2;     // Rij 1 = titel+URL, Rij 2 = kolomtitels
+                           // ⚠️ Niet aanpassen zonder ook setupHeaders() aan te passen
+// ============================================================
+
 
 function doPost(e) {
   try {
@@ -25,10 +39,7 @@ function doPost(e) {
 
     const row = [
       timestamp,            // A:  Tijdstempel
-
       data.a  || 0,         // B:  Uptime (s)
-
-      // C–I: SCH Boiler temperaturen
       data.b  || 0,         // C:  TopH (°C)
       data.c  || 0,         // D:  TopL (°C)
       data.d  || 0,         // E:  MidH (°C)
@@ -36,8 +47,6 @@ function doPost(e) {
       data.f  || 0,         // G:  BotH (°C)
       data.g  || 0,         // H:  BotL (°C)
       data.h  || 0,         // I:  Gem (°C)
-
-      // J–P: Duty cycles circuits 1–7 (%)
       data.i  || 0,         // J:  BB duty %
       data.j  || 0,         // K:  WP duty %
       data.k  || 0,         // L:  BK duty %
@@ -45,8 +54,6 @@ function doPost(e) {
       data.m  || 0,         // N:  EP duty %
       data.n  || 0,         // O:  KK duty %
       data.o  || 0,         // P:  IK duty %
-
-      // Q–W: Relay-staten circuits 1–7 (0/1)
       data.p  || 0,         // Q:  R1
       data.q  || 0,         // R:  R2
       data.r  || 0,         // S:  R3
@@ -54,24 +61,26 @@ function doPost(e) {
       data.t  || 0,         // U:  R5
       data.u  || 0,         // V:  R6
       data.v  || 0,         // W:  R7
-
-      // X–Y: Vermogen & ventilatie
       data.w  || 0,         // X:  HeatDem (kW)
       data.x  || 0,         // Y:  Ventilatie (%)
-
-      // Z–AC: ECO distributiepompen
       data.y  || 0,         // Z:  SCH Pomp (1/0)
       data.z  || 0,         // AA: SCH Overgepompt (kWh)
       data.aa || 0,         // AB: WON Pomp (1/0)
       data.ab || 0,         // AC: WON Overgepompt (kWh)
-
-      // AD–AF: Systeemstatus
       data.ac || 0,         // AD: WiFi RSSI (dBm)
       data.ad || 0,         // AE: Free heap (%)
       data.ae || 0,         // AF: Heap largest block (KB)
     ];
 
     sheet.appendRow(row);
+
+    // MAX_ROWS bewaking: verwijder oudste datarij als limiet overschreden
+    // Rij 1 = titelrij, Rij 2 = kolomtitels, datarijen starten op rij 3
+    const dataRows = sheet.getLastRow() - HEADER_ROWS;
+    if (dataRows > MAX_ROWS) {
+      sheet.deleteRow(HEADER_ROWS + 1);  // verwijder oudste rij (eerste datarij)
+      Logger.log("MAX_ROWS (" + MAX_ROWS + ") bereikt — oudste rij verwijderd");
+    }
 
     return ContentService
       .createTextOutput(JSON.stringify({
@@ -99,15 +108,39 @@ function doPost(e) {
 // ============================================================
 function setupHeaders() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const ss    = SpreadsheetApp.getActiveSpreadsheet();
 
-  if (sheet.getLastRow() > 0) {
-    const firstCell = sheet.getRange(1, 1).getValue();
-    if (firstCell === "Tijdstempel") {
+  // --- Verwijder bestaande koprijen als aanwezig ---
+  // Van onder naar boven verwijderen om rijnummers correct te houden
+  if (sheet.getLastRow() >= 2) {
+    const row2 = sheet.getRange(2, 1).getValue();
+    if (row2 === "Tijdstempel") {
+      sheet.deleteRow(2);
+      Logger.log("Bestaande kolomtitelrij (rij 2) verwijderd.");
+    }
+  }
+  if (sheet.getLastRow() >= 1) {
+    const row1 = sheet.getRange(1, 1).getValue();
+    if (typeof row1 === "string" && row1.startsWith("HVAC")) {
       sheet.deleteRow(1);
-      Logger.log("Bestaande koprij verwijderd.");
+      Logger.log("Bestaande titelrij (rij 1) verwijderd.");
     }
   }
 
+  // --- Rij 1: Titelrij met scriptnaam en sheet-URL ---
+  sheet.insertRowBefore(1);
+  const titleCell = sheet.getRange(1, 1);
+  titleCell.setValue("HVAC CONTROLLER DATA LOGGER v5  |  " + ss.getUrl());
+  titleCell.setFontSize(9);
+  titleCell.setFontWeight("normal");
+  titleCell.setFontStyle("italic");
+  titleCell.setFontColor("#cccccc");
+  titleCell.setBackground("#222222");
+  titleCell.setHorizontalAlignment("left");
+  titleCell.setVerticalAlignment("middle");
+  sheet.setRowHeight(1, 24);
+
+  // --- Rij 2: Kolomtitels ---
   const headers = [
     "Tijdstempel",          // A  (1)
     "Uptime (s)",           // B  (2)
@@ -143,19 +176,34 @@ function setupHeaders() {
     "Heap block (KB)",      // AF (32)
   ];
 
-  sheet.insertRowBefore(1);
-  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  sheet.insertRowBefore(2);
+  const headerRange = sheet.getRange(2, 1, 1, headers.length);
+  headerRange.setValues([headers]);
 
-  const headerRange = sheet.getRange(1, 1, 1, headers.length);
-  headerRange.setFontWeight("bold");
-  headerRange.setBackground("#FFCC00");
+  // Opmaak: 10pt, wit op zwart, niet vet, niet italic, gecentreerd, wrap
+  headerRange.setFontSize(10);
+  headerRange.setFontWeight("normal");
+  headerRange.setFontStyle("normal");
+  headerRange.setFontColor("#ffffff");
+  headerRange.setBackground("#000000");
   headerRange.setHorizontalAlignment("center");
+  headerRange.setVerticalAlignment("middle");
+  headerRange.setWrap(true);
 
-  sheet.setColumnWidth(1, 160);  // Tijdstempel
-  for (let i = 2; i <= headers.length; i++) sheet.setColumnWidth(i, 100);
-  sheet.setFrozenRows(1);
+  // Rijhoogte kolomtitelrij
+  sheet.setRowHeight(2, 40);
 
-  Logger.log("Headers aangemaakt! (32 kolommen, A t/m AF)");
+  // Kolombreedtes
+  sheet.setColumnWidth(1, 130);  // A: Tijdstempel
+  for (let i = 2; i <= headers.length; i++) sheet.setColumnWidth(i, 80);
+
+  // 2 rijen bevriezen: rij 1 (titel) + rij 2 (kolomtitels)
+  sheet.setFrozenRows(2);
+  sheet.setFrozenColumns(1);  // Alleen kolom A bevroren
+
+  Logger.log("Headers aangemaakt! " + headers.length + " kolommen (A t/m AF)");
+  Logger.log("Rij 1 = titelrij | Rij 2 = kolomtitels | Data vanaf rij 3");
+  Logger.log("MAX_ROWS instelling: " + MAX_ROWS);
 }
 
 
@@ -187,23 +235,18 @@ function test() {
 // ============================================================
 // DAGELIJKSE SAMENVATTING — optionele e-mail trigger
 // Trigger: Tools → Triggers → sendDailySummary → 23u–0u
-// Kolomnummers aangepast voor v4 layout
 // ============================================================
 function sendDailySummary() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   const lastRow = sheet.getLastRow();
-  if (lastRow < 2) { Logger.log("Nog geen data"); return; }
+  if (lastRow < 3) { Logger.log("Nog geen data"); return; }
 
   const today = new Date();
   let count = 0, maxHeat = 0, sumHeat = 0, sumVent = 0;
   let schPompCount = 0, wonPompCount = 0;
   const sumDuty = [0, 0, 0, 0, 0, 0, 0];
 
-  // Kolom-indices (1-based):
-  // X=24 HeatDem, Y=25 Vent, Z=26 SCH Pomp, AB=28 WON Pomp
-  // J–P = 10–16 duty cycles, Q–W = 17–23 relays
-
-  for (let i = lastRow; i > 1; i--) {
+  for (let i = lastRow; i > HEADER_ROWS; i--) {
     const ts = new Date(sheet.getRange(i, 1).getValue());
     if (ts.toDateString() !== today.toDateString()) break;
     count++;
@@ -219,7 +262,6 @@ function sendDailySummary() {
     if (schPomp > 0) schPompCount++;
     if (wonPomp > 0) wonPompCount++;
 
-    // Duty cycles J–P = kolommen 10–16
     for (let c = 0; c < 7; c++) {
       sumDuty[c] += sheet.getRange(i, 10 + c).getValue() || 0;
     }
