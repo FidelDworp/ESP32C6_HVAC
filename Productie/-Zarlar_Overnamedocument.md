@@ -936,7 +936,154 @@ Elke ROOM controller meet lokaal de luchtvochtigheid. Bij overschrijding van een
 
 ---
 
-## 9. Bestanden
+## 9. Shield fabricage — JLCPCB workflow
+
+### 9.1 Software vereisten
+
+| Tool | Versie | OS | Opmerking |
+|---|---|---|---|
+| **Eagle CAD** | **9.6.2** | macOS Catalina 10.15+ | ⚠️ Eagle 7.7.0 crasht bij CAM export op macOS 10.15+ — altijd 9.6.2 gebruiken |
+| Eagle 9.6.2 download | — | — | https://eagle-updates.circuits.io/downloads/latest.html |
+
+⚠️ **Eagle 7.7.0 is onbruikbaar voor Gerber-export op moderne macOS** — crasht met `EXC_BAD_ACCESS (SIGSEGV)` bij Process Job, zowel op Apple Silicon (Rosetta) als native Intel. Dit is een bug in Eagle 7.7.0 zelf, niet een OS-probleem. Eagle 9.6.2 werkt correct op Catalina ondanks de verouderde systeemvereistenlijst in de installer.
+
+### 9.2 CAM files — juiste versie per Eagle versie
+
+| Eagle versie | CAM file | Download |
+|---|---|---|
+| 9.6.2 | `jlcpcb_2_layer_v9.cam` | https://raw.githubusercontent.com/JLCPCBofficial/jlcpcb-eagle/master/cam/jlcpcb_2_layer_v9.cam |
+| 7.2–8.5.2 | `jlcpcb_2_layer_v72.cam` | https://raw.githubusercontent.com/JLCPCBofficial/jlcpcb-eagle/master/cam/jlcpcb_2_layer_v72.cam |
+
+Sla de CAM file op in `~/Documents/EAGLE/cam/` — dan verschijnt hij automatisch in het Control Panel onder CAM Jobs.
+
+### 9.3 Stap 1 — Ground plane genereren (ratsnest)
+
+De ground plane in Eagle is een "polygon pour" die **niet bewaard wordt** in het .brd bestand. Dit moet altijd opnieuw gedaan worden vlak vóór de CAM export.
+
+1. Open het `.brd` bestand in Eagle — Board venster actief
+2. Typ in de commandolijn onderaan: `ratsnest` → Enter
+3. De ground plane verschijnt als gevulde zones
+4. Controleer visueel: geen onverwachte isolaties of eilanden?
+5. Resetten indien nodig: `ripup @;` → Enter → dan opnieuw `ratsnest`
+
+⚠️ **Sla het .brd bestand NIET op na ratsnest** — anders bewaar je de gevulde polygons en kunnen toekomstige edits problemen geven.
+
+### 9.4 Stap 2 — Gerber files genereren
+
+1. Open de CAM Processor via het icoon bovenaan in het Board venster
+2. Laad de JLCPCB job: in Eagle 9.x via de **Load** knop of **Open Job** bovenaan het CAM Processor venster → selecteer `jlcpcb_2_layer_v9.cam`
+3. De secties verschijnen als tabs: Board Outline, Drill File, Top Copper Layer, etc.
+4. Klik **Process Job** → alle bestanden worden gegenereerd in één ZIP
+
+**Gegenereerde bestanden (11 stuks voor 2-laags board):**
+
+| Extensie | Inhoud |
+|---|---|
+| `.GTL` | Top copper |
+| `.GBL` | Bottom copper |
+| `.GTS` | Top soldermask |
+| `.GBS` | Bottom soldermask |
+| `.GTO` | Top silkscreen |
+| `.GBO` | Bottom silkscreen |
+| `.GKO` | Board outline |
+| `.XLN` | Drill file (Excellon) |
+| + diverse | Paste, drill info, etc. |
+
+⚠️ Negeer de `.gpi` en `.dri` bestanden — niet nodig voor JLCPCB.
+
+### 9.5 Stap 3 — BOM en CPL genereren (voor SMD assemblage)
+
+BOM en CPL worden gegenereerd via een **ULP-script**, niet via de CAM processor.
+
+**Eenmalige installatie:**
+1. Download `jlcpcb_smta_exporter.ulp` van https://github.com/oxullo/jlcpcb-eagle
+2. Kopieer naar `~/Documents/EAGLE/ulps/`
+
+**BOM + CPL exporteren:**
+1. Board venster actief in Eagle 9.6.2
+2. **File → Run ULP** → selecteer `jlcpcb_smta_exporter.ulp` → OK
+3. Kies layer: **Top** (of Bottom)
+4. Kies output map — maak een aparte map `smt-files` aan
+5. Twee bestanden worden aangemaakt:
+   - `boardname_top_bom.csv`
+   - `boardname_top_cpl.csv`
+
+**BOM formaat (kolommen):**
+
+| Kolom | Inhoud |
+|---|---|
+| Comment | Waarde/type component |
+| Designator | Referenties (bijv. C1 C4 C6) |
+| Footprint | Package type |
+| LCSC Part # | LCSC onderdeelnummer (zie §9.6) |
+| Quantity | Aantal |
+
+**Tip:** Voeg LCSC onderdeelnummers toe als attribuut `LCSC_PART` aan je componenten in het schema — de ULP exporteert deze automatisch naar de BOM en JLCPCB matcht de onderdelen automatisch bij bestelling.
+
+### 9.6 Shield v2.0 — BOM componenten met LCSC nummers
+
+| Ref | Waarde | Package | LCSC | Aantal |
+|---|---|---|---|---|
+| C1, C4, C6, C7 | 0.1µF 50V X7R | C0603 | C14663 | 4 |
+| C2, C5 | 10µF 25V X5R | C0805 | C15850 | 2 |
+| R1, R2, R3 | 4.7kΩ (I2C pull-ups) | 0805 | C17673 | 3 |
+| R4 | 499Ω (UART TX) | R0402 | C4125 | 1 |
+| R5 | 33Ω (Pixels datasignaal) | R0402 | C284519 | 1 |
+| R9 | 3kΩ (Power LED serie) | 0805 | C2907263 | 1 |
+| LED1 | Blauw (Power indicator) | CHIPLED_0603 | C19171394 | 1 |
+| PTC, PTC1 | 500mA resetbare zekering | PTC-1206 | C52748003 | 2 |
+
+**Niet door JLCPCB te plaatsen (THT/connectors — zelf solderen):**
+- ESP32-C6 dev board (in pin headers)
+- Alle connectors (RJ45, JST, pin headers)
+- Spanningsregelaar U1 (knipbaar)
+
+### 9.7 Stap 4 — Rotaties controleren in JLCPCB viewer
+
+Na upload van BOM en CPL toont JLCPCB een interactieve 2D/3D preview.
+
+**Polariteitscheck per componenttype:**
+
+| Component | Gepolst? | Rotatie kritiek? | Actie |
+|---|---|---|---|
+| Keramische condensatoren (X5R, X7R) | ❌ | Nee | Geen controle nodig |
+| Weerstanden | ❌ | Nee | Geen controle nodig |
+| PTC zekeringen | ❌ | Nee | Geen controle nodig |
+| **LED1 (CHIPLED_0603)** | ✅ | **Ja** | **Controleer kathode richting!** |
+
+**LED1 polariteit (C19171394):**
+- Circuit: `VCC_5V → LED1 anode → POWER-LED net → R9 (3kΩ) → GND`
+- Pad **VCC_5V** = anode (+)
+- Pad **POWER-LED** = kathode (−)
+- Controleer via LCSC datasheet C19171394 welke kant van het 0603 package de kathode is
+
+**Rotatie corrigeren indien nodig:**
+Open `boardname_top_cpl.csv` in Excel/Numbers → zoek de designator → pas de Rotation waarde aan met stappen van 90° → herlaad in JLCPCB viewer.
+
+### 9.8 Stap 5 — Upload en bestellen bij JLCPCB
+
+1. Ga naar jlcpcb.com → **Order Now**
+2. Upload de Gerber ZIP
+3. Stel PCB parameters in: 2 lagen, gewenste kleur soldermask, HASL of ENIG finish
+4. Scroll naar beneden → activeer **PCB Assembly**
+5. Kies **Top Side**, **Economic assembly**
+6. Klik Next → upload `_bom.csv` en `_cpl.csv`
+7. Controleer de component preview
+8. Bevestig onderdelen en rotaties → bestelling plaatsen
+
+### 9.9 Bekende valkuilen
+
+| Probleem | Oorzaak | Oplossing |
+|---|---|---|
+| Eagle 7.7.0 crasht bij Process Job | Bug in Eagle 7.7.0 op macOS 10.15+ | Gebruik Eagle 9.6.2 |
+| CAM file niet zichtbaar in Control Panel | Verkeerde map | Kopieer naar `~/Documents/EAGLE/cam/` |
+| "No board loaded" bij CAM Processor | CAM Processor geopend vanuit Control Panel | Open CAM Processor via icoon in het Board venster |
+| Ground plane verdwenen na opslaan | ratsnest-resultaat niet persistent | Altijd opnieuw `ratsnest` uitvoeren vóór CAM export |
+| LED verkeerd om gesoleerd | Rotatie in CPL incorrect | Controleer datasheet + JLCPCB viewer, pas CPL aan |
+
+---
+
+## 10. Bestanden
 
 | Bestand | Beschrijving |
 |---|---|
@@ -953,7 +1100,7 @@ Elke ROOM controller meet lokaal de luchtvochtigheid. Bij overschrijding van een
 
 ---
 
-## 10. Instructies voor nieuwe sessie
+## 11. Instructies voor nieuwe sessie
 
 1. **Upload** de actuele sketch als bijlage + dit document
 2. **Vraag Claude** het document te lezen en samen te vatten vóór hij iets aanpast
