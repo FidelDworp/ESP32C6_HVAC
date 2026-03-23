@@ -514,7 +514,9 @@ Shield v1.0 is ook bruikbaar als testopstelling voor de HVAC controller. Vergele
 |---|---|---|
 | T-BUS 3-pin | IO3 + 3V3 + GND | DS18B20 sensoren |
 | I2C connector | IO11 (SCL) + IO13 (SDA) + 3V3 + GND | MCP23017 I/O expander |
-| SPI header IO20 | IO20 + GND | PWM ventilator → externe OPAMP → 10V (Begetube) |
+| SPI header IO20 | IO20 + GND | PWM ventilator → AnaBoX (of gelijkwaardige OPAMP) → 10V (Begetube) |
+
+⚠️ **IO20 PWM ventilator:** zelfde probleem als ECO — ESP32-C6 levert 3.3V, Begetube ventilatie vereist 0–10V. De AnaBoX (zie §4.1) is ook hiervoor bruikbaar. Versterking R3/R2 = 3.3× met 12V voeding geeft ~10.6V uitgang.
 
 ⚠️ De I2C pull-ups (R1, R2) zijn verplicht — zonder pull-ups werkt de MCP23017 niet en reageren alle relais niet.
 
@@ -569,7 +571,29 @@ Runtime: largest_block stabiel >35KB  ✅
 | Temperatuursensoren | 6× DS18B20 op OneWire (IO3) — 2 per boilerlaag: Top/Mid/Bot × H/L |
 | PT-sensor (collector) | MAX31865 SPI-module (CS=IO20, MOSI=IO21, MISO=IO22, SCK=IO23) — **instelbaar PT100 of PT1000** |
 | Pomprelais | IO1 — digitaal aan/uit (actief-laag) |
-| Circulatiepomp | PWM op IO5 (0–255), freq 1 kHz, 8-bit resolutie |
+| Circulatiepomp | PWM op IO5 (0–255), freq 1 kHz, 8-bit resolutie → via **AnaBoX** naar 0–10V (OEG pomp vereist min. 4V) |
+
+#### AnaBoX — PWM spanningsomzetter
+
+De OEG circulatiepomp vereist een **0–10V analoog stuursignaal** (minimum 4V). De ESP32-C6 levert slechts 3.3V op IO5. De AnaBoX (eigen iTroniX ontwerp, v1.0) zet dit om via een LM324N op-amp.
+
+| Component | Waarde | Functie |
+|---|---|---|
+| IC1A | LM324N | Non-inverting versterker (1 van 4 op-amps) |
+| R1 | 10kΩ | Ingang pull-down |
+| R2 | 10kΩ | Feedback |
+| R3 | 33kΩ | Versterking: R3/R2 = 3.3× |
+| C1 | 33µF | Uitgangsafvlakking |
+
+**Voeding:** 7.5–12V (uitgang is ~1.4V lager dan voedingsspanning → minimum 6V nodig)
+
+**Werking:** IO5 PWM (0–3.3V) → AnaBoX → ANAOUT (0–10V) → OEG pomp
+
+```
+IO5 (3.3V PWM) → PWMIN → LM324N (gain 3.3×) → ANAOUT → OEG pomp
+```
+
+⚠️ De AnaBoX is **verplicht** voor de OEG pomp — zonder omzetter reageert de pomp niet onder 4V.
 
 #### PT-sensor — type en configuratie
 
@@ -632,9 +656,11 @@ Shield v1.0 heeft geen SMD-componenten — deze worden manueel gesoldeerd voor g
 | Connector | Pins | Functie |
 |---|---|---|
 | ROOMSENSE RJ45 | IO1 + GND + 5V | Relaismodule (JD-VCC=5V, VCC=3V3, GND, IN1=IO1) |
-| ROOMSENSE RJ45 | IO5 + GND | PWM circulatiepomp |
+| ROOMSENSE RJ45 | IO5 + GND | PWM → AnaBoX PWMIN → ANAOUT → OEG pomp |
 | T-BUS 3-pin | IO3 + 3V3 + GND | DS18B20 sensoren |
 | SPI 4-pin header | IO20–23 + 3V3 + GND | MAX31865 PT-sensor (6-aderig, 3V3-uitgang module niet verbinden!) |
+
+⚠️ **AnaBoX voeding:** aparte 7.5–12V voeding nodig voor de LM324N — niet vanuit het shield.
 
 ### 4.3 ECO /json output (keys a..s → naar Zarlar → Google Sheets)
 
