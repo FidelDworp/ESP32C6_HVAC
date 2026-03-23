@@ -1,6 +1,6 @@
 # Zarlar Thuisautomatisering — Master Overnamedocument
 **ESP32-C6 · Arduino IDE · Matter · Google Sheets**
-*Filip Delannoy — Zarlardinge (BE) — bijgewerkt 19 maart 2026*
+*Filip Delannoy — Zarlardinge (BE) — bijgewerkt 23 maart 2026*
 
 ---
 
@@ -537,15 +537,78 @@ Runtime: largest_block stabiel >35KB  ✅
 
 | Component | Detail |
 |---|---|
-| Board | ESP32-C6 32-pin clone (blote controller, MAC `58:8C:81:32:2B:D4`) |
+| Board | ESP32-C6 32-pin clone (MAC `58:8C:81:32:2B:D4`) |
 | Voeding | Test: 5V USB-C / Productie: 5V via VIN (Zarlar shield, PTC 500 mA) |
 | Static IP | 192.168.0.71 |
 | Temperatuursensoren | 6× DS18B20 op OneWire (IO3) — 2 per boilerlaag: Top/Mid/Bot × H/L |
-| Zonnecollector | PT1000 via MAX31865 SPI-module (CS=IO20, MOSI=IO21, MISO=IO22, SCK=IO23) |
-| Pomprelais | IO1 — digitaal aan/uit |
+| PT-sensor (collector) | MAX31865 SPI-module (CS=IO20, MOSI=IO21, MISO=IO22, SCK=IO23) — **instelbaar PT100 of PT1000** |
+| Pomprelais | IO1 — digitaal aan/uit (actief-laag) |
 | Circulatiepomp | PWM op IO5 (0–255), freq 1 kHz, 8-bit resolutie |
 
-### 4.2 ECO /json output (keys a..s → naar Zarlar → Google Sheets)
+#### PT-sensor — type en configuratie
+
+De ECO sketch ondersteunt zowel PT100 als PT1000 via de `/settings` UI:
+
+| Setting | RREF | RNOMINAL | Gebruik |
+|---|---|---|---|
+| **PT100** (default) | 430 Ω | 100 Ω | Testbord / proefopstelling |
+| **PT1000** | 4000 Ω | 1000 Ω | Dakcollector productie |
+
+- Omschakelen via `/settings` → "PT-sensor type" → herstart vereist
+- Temperatuurberekening via `pt1000.temperature(RNOMINAL, RREF)` — Callendar-Van Dusen polynoom (nauwkeuriger dan lineaire formule)
+- Altijd **2-wire** configuratie (`MAX31865_2WIRE`) — voldoende nauwkeurig voor pompsturing (±0.5–2°C fout aanvaardbaar bij ΔT-drempel van 3°C)
+
+#### PT100 sensor — identificatie
+
+⚠️ **Meet altijd de weerstand bij kamertemperatuur voor aansluiting:**
+- ~108 Ω bij 20°C → **PT100** ✅
+- ~1078 Ω bij 20°C → PT1000
+
+#### MAX31865 module — soldeerbruggen (paarse Chinese clone)
+
+| Brug | Status | Betekenis |
+|---|---|---|
+| "2/3 Wire" links | **Gesloten** | 3-wire modus (module-instelling) |
+| "2 Wire" rechts | Open | 2-wire niet actief op module |
+| "24/3" druppeltjes | **Onaangeroerd** | Rref selectie via weerstand |
+| Rref weerstand | **427 Ω ≈ 430 Ω** | Correct voor PT100 ✅ |
+
+⚠️ Ondanks "2/3 Wire" gesloten op de module gebruikt de sketch `MAX31865_2WIRE` — dit is correct en bewust. De module-jumper en de sketch-instelling zijn onafhankelijk.
+
+#### Relaismodule — voeding (duaal relaisblok met optocoupler)
+
+| Pin module | Aansluiting | Reden |
+|---|---|---|
+| JD-VCC | 5V | Relaisspoel (Tongling JQC-3FF is 5V DC coil) |
+| VCC | 3V3 | Optocoupler-kant — zodat IO1 (3.3V) de ingang kan sturen |
+| GND | GND | Gemeenschappelijk |
+| IN1 | IO1 | Stuursignaal (actief-laag: LOW = relais AAN) |
+
+⚠️ **JD-VCC jumper verwijderen** — scheidt relay-spoel (5V) van optocoupler-kant (3V3) galvanisch.
+
+### 4.2 Testopstelling op shield v1.0
+
+De ECO controller kan getest worden op het **Zarlar shield v1.0** (zonder SMD-componenten):
+
+**Minimale SMD-bestukking voor testopstelling:**
+
+| Component | Monteren | Reden |
+|---|---|---|
+| PTC×2 (500mA) | ✅ | Beveiliging voedingslijnen |
+| C2, C5 (10µF) | ✅ | Bulk afvlakking |
+| C4 (0.1µF) | ✅ | Ontkoppeling |
+| Rest (R1–R5, C1/C6/C7, LED1) | ❌ | Niet nodig voor ECO |
+
+**Aansluitingen testopstelling (manueel bedraden):**
+
+| Connector | Pins | Functie |
+|---|---|---|
+| ROOMSENSE RJ45 | IO1 + GND + 5V | Relaismodule (JD-VCC=5V, VCC=3V3, GND, IN1=IO1) |
+| ROOMSENSE RJ45 | IO5 + GND | PWM circulatiepomp |
+| T-BUS 3-pin | IO3 + 3V3 + GND | DS18B20 sensoren |
+| SPI 4-pin header | IO20–23 + 3V3 + GND | MAX31865 PT-sensor (6-aderig, 3V3-uitgang module niet verbinden!) |
+
+### 4.3 ECO /json output (keys a..s → naar Zarlar → Google Sheets)
 
 | Key | Sheet | Label | Eenheid |
 |-----|-------|-------|---------|
@@ -571,16 +634,22 @@ Runtime: largest_block stabiel >35KB  ✅
 
 ⚠️ **ECO gebruikt key `p` voor RSSI** — alle andere controllers gebruiken `ac`. Kritiek voor Dashboard RSSI-extractie.
 
-### 4.3 Openstaande punten ECO
+### 4.4 Versiehistorie ECO (recente wijzigingen)
 
-- **Heap-analyse**: baseline meten, ArduinoJson v7 check, `String(i)` NVS-keys → `snprintf`
+| Versie | Wijziging |
+|---|---|
+| v1.23 | PT-sensor type instelbaar via UI: PT100 (testbord) / PT1000 (dakcollector). `readPT1000()` gebruikt Adafruit `pt1000.temperature()` — Callendar-Van Dusen. 2-wire gestandaardiseerd. |
+| v1.22 | Matter geïntegreerd, heap-monitoring, crash-log NVS, chunked streaming UI |
+| v1.21 | Google Sheets logging naar Dashboard gedelegeerd |
+
+### 4.5 Openstaande punten ECO
+
+- **PWM output LED**: visuele indicator voor pompsnelheid — eerst IO5 stroom meten voor aansluiting (pompdriver type onbekend, mogelijk externe driver nodig)
 - **kWh-berekening**: echte `Q = m × Cp × ΔT / 3600` per pompbeurt
-- **Reactietijden**: IO-pinnen direct aansturen vanuit webUI-handlers
-- **Versieheader**: `* /` met spatie in commentaar
+- **Heap-baseline v1.23**: meten na Matter-activatie op testopstelling
 
 ---
 
-## 5. ROOM Controller — specifiek
 
 ### 5.1 Hardware
 
@@ -1055,10 +1124,20 @@ Na upload van BOM en CPL toont JLCPCB een interactieve 2D/3D preview.
 - Circuit: `VCC_5V → LED1 anode → POWER-LED net → R9 (3kΩ) → GND`
 - Pad **VCC_5V** = anode (+)
 - Pad **POWER-LED** = kathode (−)
-- Controleer via LCSC datasheet C19171394 welke kant van het 0603 package de kathode is
+
+**Hoe de LED richting beoordelen in de JLCPCB 3D viewer:**
+- JLCPCB toont een **roze/magenta stip** op pin 1 van elk gepolst component — dit is de **kathode (−)** van de LED
+- De roze stip moet aan de **POWER-LED kant** staan (kant richting R9/GND), niet aan de VCC_5V kant
+- In de shield v2.0 bestelling: LED stond initieel **dwars** (90° fout) — gecorrigeerd naar horizontaal met roze stip aan POWER-LED zijde ✅
 
 **Rotatie corrigeren indien nodig:**
-Open `boardname_top_cpl.csv` in Excel/Numbers → zoek de designator → pas de Rotation waarde aan met stappen van 90° → herlaad in JLCPCB viewer.
+1. Open `boardname_top_cpl.csv` in Excel/Numbers
+2. Zoek de designator (bijv. LED1)
+3. Pas de Rotation waarde aan met stappen van 90° (bijv. 90 → 180, of 0 → 270)
+4. Sla op en herlaad het bestand in de JLCPCB viewer
+5. Herhaal tot de roze stip aan de juiste kant staat
+
+**Na controle:** JLCPCB vraagt *"Can we proceed PCBA with corrected parts placement?"* → kies **"Yes, please proceed"** → Submit.
 
 ### 9.8 Stap 5 — Upload en bestellen bij JLCPCB
 
@@ -1079,7 +1158,8 @@ Open `boardname_top_cpl.csv` in Excel/Numbers → zoek de designator → pas de 
 | CAM file niet zichtbaar in Control Panel | Verkeerde map | Kopieer naar `~/Documents/EAGLE/cam/` |
 | "No board loaded" bij CAM Processor | CAM Processor geopend vanuit Control Panel | Open CAM Processor via icoon in het Board venster |
 | Ground plane verdwenen na opslaan | ratsnest-resultaat niet persistent | Altijd opnieuw `ratsnest` uitvoeren vóór CAM export |
-| LED verkeerd om gesoleerd | Rotatie in CPL incorrect | Controleer datasheet + JLCPCB viewer, pas CPL aan |
+| LED verkeerd om gesoleerd | Rotatie in CPL incorrect | Controleer roze stip in JLCPCB viewer — stip = kathode (−), moet aan POWER-LED/GND kant staan. CPL aanpassen in stappen van 90°. |
+| LED staat dwars in viewer | CPL rotatie 90° fout | Pas Rotation aan met ±90° in CPL file, herlaad in viewer |
 
 ---
 
@@ -1119,4 +1199,4 @@ Open `boardname_top_cpl.csv` in Excel/Numbers → zoek de designator → pas de 
 
 ---
 
-*Zarlar project — Filip Delannoy — bijgewerkt 19 maart 2026*
+*Zarlar project — Filip Delannoy — bijgewerkt 23 maart 2026*
