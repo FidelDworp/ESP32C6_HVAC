@@ -492,7 +492,33 @@ Crash-info tonen in `/settings`: laatste reden + teller + resetknop.
 
 **Circuitnamen:** instelbaar per circuit via `/settings`. Default: `Circuit 1` … `Circuit 7`. In productie ingesteld op BB, WP, BK, ZP, EP, KK, IK.
 
-### 3.2 Libraries (HVAC)
+### 3.2 Testopstelling op shield v1.0
+
+Shield v1.0 is ook bruikbaar als testopstelling voor de HVAC controller. Vergeleken met ECO zijn **R1 en R2** extra nodig voor de I2C-bus naar de MCP23017.
+
+**Minimale SMD-bestukking voor HVAC testopstelling:**
+
+| Component | Waarde | Reden |
+|---|---|---|
+| PTC×2 | 500 mA | Beveiliging voedingslijnen |
+| C2, C5 | 10µF 25V X5R | Bulk afvlakking |
+| C4 | 0.1µF 50V X7R | Ontkoppeling |
+| R3 | 4k7 | OneWire pull-up voor DS18B20 (T-BUS) |
+| **R1, R2** | **4k7** | **I2C pull-ups voor MCP23017 — extra t.o.v. ECO!** |
+
+**Niet nodig voor HVAC:** R4, R5, C1/C6/C7, LED1, SPI header.
+
+**Aansluitingen testopstelling (manueel bedraden):**
+
+| Connector | Pins | Functie |
+|---|---|---|
+| T-BUS 3-pin | IO3 + 3V3 + GND | DS18B20 sensoren |
+| I2C connector | IO11 (SCL) + IO13 (SDA) + 3V3 + GND | MCP23017 I/O expander |
+| SPI header IO20 | IO20 + GND | PWM ventilator → externe OPAMP → 10V (Begetube) |
+
+⚠️ De I2C pull-ups (R1, R2) zijn verplicht — zonder pull-ups werkt de MCP23017 niet en reageren alle relais niet.
+
+### 3.3 Libraries (HVAC)
 
 | Library | Gebruik |
 |---|---|
@@ -502,14 +528,14 @@ Crash-info tonen in `/settings`: laatste reden + teller + resetknop.
 | `ArduinoJson` | JSON polling van room controllers + ECO |
 | `Preferences` | NVS opslag |
 
-### 3.3 Heap-baseline (v1.18)
+### 3.4 Heap-baseline (v1.18)
 
 ```
 Setup:   free=~180KB  largest=~55KB
 Runtime: largest_block stabiel >35KB  ✅
 ```
 
-### 3.4 Matter endpoints (v1.18)
+### 3.5 Matter endpoints (v1.18)
 
 | # | Type | Variabele | Opmerking |
 |---|---|---|---|
@@ -517,14 +543,14 @@ Runtime: largest_block stabiel >35KB  ✅
 | EP2–EP8 | MatterOnOffPlugin | `circuits[0..6]` | Kringen 1–7 |
 | EP9 | MatterFan | `vent_percent` | Ventilatie % |
 
-### 3.5 Versiehistorie HVAC (recente wijzigingen)
+### 3.6 Versiehistorie HVAC (recente wijzigingen)
 
 | Versie | Wijziging |
 |---|---|
 | v1.19 | Matter `onChangeOnOff` callback: `mcp.digitalWrite()` onmiddellijk toegevoegd — relais reageren nu direct vanuit Apple Home |
 | v1.18 | ECO JSON keys: ETopH→b, EBotL→g, EAv→h, EQtot→i |
 
-### 3.6 Openstaande punten HVAC
+### 3.7 Openstaande punten HVAC
 
 - **kWh-berekening**: echte `Q = m × Cp × ΔT / 3600` per pompbeurt implementeren
 - **HTML compressie**: zelfde aanpak als ROOM v3.1 — witte pagina op iPhone bij ventilatieslider wijst op heap-krapte bij page reload
@@ -588,16 +614,18 @@ De ECO sketch ondersteunt zowel PT100 als PT1000 via de `/settings` UI:
 
 ### 4.2 Testopstelling op shield v1.0
 
-De ECO controller kan getest worden op het **Zarlar shield v1.0** (zonder SMD-componenten):
+Shield v1.0 heeft geen SMD-componenten — deze worden manueel gesoldeerd voor gebruik als testopstelling. De shield is volledig bruikbaar voor ECO mits onderstaande componenten aangebracht worden.
 
-**Minimale SMD-bestukking voor testopstelling:**
+**Minimale SMD-bestukking voor ECO testopstelling:**
 
-| Component | Monteren | Reden |
+| Component | Waarde | Reden |
 |---|---|---|
-| PTC×2 (500mA) | ✅ | Beveiliging voedingslijnen |
-| C2, C5 (10µF) | ✅ | Bulk afvlakking |
-| C4 (0.1µF) | ✅ | Ontkoppeling |
-| Rest (R1–R5, C1/C6/C7, LED1) | ❌ | Niet nodig voor ECO |
+| PTC×2 | 500 mA | Beveiliging voedingslijnen |
+| C2, C5 | 10µF 25V X5R | Bulk afvlakking |
+| C4 | 0.1µF 50V X7R | Ontkoppeling |
+| R3 | 4k7 | OneWire pull-up voor DS18B20 (T-BUS) |
+
+**Niet nodig voor ECO:** R1, R2 (I2C pull-ups — ECO gebruikt geen I2C), R4, R5, C1/C6/C7, LED1.
 
 **Aansluitingen testopstelling (manueel bedraden):**
 
