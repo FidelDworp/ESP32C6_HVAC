@@ -1,6 +1,6 @@
 # Zarlar Thuisautomatisering — Master Overnamedocument
 **ESP32-C6 · Arduino IDE · Matter · Google Sheets**
-*Filip Delannoy — Zarlardinge (BE) — bijgewerkt 23 maart 2026*
+*Filip Delannoy — Zarlardinge (BE) — bijgewerkt 26 maart 2026*
 
 ---
 
@@ -27,13 +27,13 @@ Een volledig zelfgebouwd thuisautomatiseringssysteem op basis van drie ESP32-C6 
 
 | Controller | Naam | IP | MAC | Board | Versie | Status |
 |---|---|---|---|---|---|---|
-| **HVAC** | ESP32_HVAC.local | 192.168.0.70 | 58:8C:81:32:2B:90 | 32-pin clone | v1.19 | ✅ Productie, stabiel |
-| **ECO Boiler** | ESP32_ECO Boiler | 192.168.0.71 | 58:8C:81:32:2B:D4 | 32-pin clone | v1.22 | ✅ Productie, stabiel |
+| **HVAC** | ESP32_HVAC.local | 192.168.0.70 | 58:8C:81:32:2B:90 | 32-pin clone (experimenteerbord) | v1.19 | ✅ Productie, stabiel |
+| **ECO Boiler** | ESP32_ECO Boiler | 192.168.0.71 | 58:8C:81:32:2B:D4 | 32-pin clone (blote controller) | v1.22 | ✅ Productie, stabiel |
 | **ROOM / Eetplaats** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:2F:48 | 32-pin clone | v2.10 | ✅ Matter + heap stabiel |
-| **Testroom** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:29:54 | 32-pin clone (experimenteerbord) | v2.10 | 🔄 Zelfde IP als EETPL |
-| **Zarlar Dashboard** | ESP32_ZARLAR.local | 192.168.0.60 | A8:42:E3:4B:FA:BC | 32-pin clone | v3.0 | ✅ Matter HOME/UIT, WiFi tester |
+| **Testroom** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:29:54 | 32-pin clone (experimenteerbord, kromme pinnetjes) | v2.10 | 🔄 Zelfde IP als EETPL |
+| **Zarlar Dashboard** | ESP32_ZARLAR.local | 192.168.0.60 | A8:42:E3:4B:FA:BC | 30-pin clone (blote controller) | v3.0 | ✅ Matter HOME/UIT, WiFi tester |
 
-**MAC-adressen** zijn enkel nodig voor identificatie in de client-lijst van de router — niet functioneel voor de werking van het systeem. Alle controllers gebruiken vaste IP-adressen ingesteld via de `/settings` pagina.
+⚠️ **MAC-wissel HVAC:** het experimenteerbord (MAC `58:8C:81:32:29:54`) is eerder ook als HVAC-controller gebruikt. De huidige productie-HVAC draait op `58:8C:81:32:2B:90`. Bij twijfel: check het MAC-adres in de serial output bij boot.
 
 **Geplande controllers** (sketches nog niet geflasht):
 
@@ -62,7 +62,7 @@ Bestand: `partitions_16mb.csv` — plaatsen naast het `.ino` bestand in de schet
 
 ⚠️ **Nooit `huge_app` gebruiken** — had maar één app-slot en brak OTA. `app0` + `app1` elk 6 MB → OTA volledig werkend.
 
-⚠️ **Nooit een 4MB controller gebruiken** — de `partitions_16mb.csv` past niet op 4MB flash en veroorzaakt een bootloop (`partition size 0x600000 exceeds flash chip size 0x400000`). Alle Zarlar-controllers gebruiken uitsluitend **16MB** boards.
+⚠️ **Nooit een 4MB controller gebruiken voor het Dashboard** — de `partitions_16mb.csv` past niet op 4MB flash. Dit veroorzaakte een bootloop (`partition size 0x600000 exceeds flash chip size 0x400000`). Het Dashboard gebruikt nu een 32-pin 16MB controller, identiek aan de andere drie.
 
 ### 1.5 ESP32-C6 hardware — modules en boards
 
@@ -76,18 +76,14 @@ Alle Zarlar-controllers draaien op de **ESP32-C6-WROOM-1N16** module (Espressif)
 
 Voor locaties met zwakke WiFi-verbinding: **ESP32-C6-WROOM-1U** (identieke module, maar met U.FL/IPEX-connector voor externe antenne). Bereik interne antenne: ~20–50m indoors, ~80–200m buiten. Externe antenne: 2–3× beter indoors.
 
-#### Dev boards — gestandaardiseerd op 32-pin
+#### Dev boards — twee formfactors in gebruik
 
-Alle Zarlar-controllers die op een shield worden gemonteerd gebruiken het **32-pin clone board** (AliExpress, €2.52/stuk). Het shield is ontworpen voor de 32-pin footprint.
+| Type | Pins | Prijs | Aantallen | Opmerking |
+|---|---|---|---|---|
+| 32-pin clone | 32 | €2.52/stuk (AliExpress, 25 dec 2025) | 10 stuks, €65 | **Huidige productie** — clone, niet officieel Espressif |
+| 30-pin clone | 30 | €9/stuk (3 stuks, €27) | 3 stuks | Dashboard + reserve |
 
-| Type | Pins | Prijs | Gebruik |
-|---|---|---|---|
-| 32-pin clone | 32 | €2.52/stuk (AliExpress, 25 dec 2025, 10 stuks €65) | **Alle controllers op shield** |
-| 30-pin clone | 30 | €9/stuk (3 stuks, €27) | Enkel voor projecten zonder shield (bijv. losse testopstellingen) |
-
-⚠️ **Het Zarlar shield v2.0 is NIET compatibel met het 30-pin board** — andere pinvolgorde en footprint. Gebruik uitsluitend 32-pin boards op het shield.
-
-⚠️ **Clone-boards:** de AliExpress-boards zijn clones — niet officieel Espressif. Ze werken identiek maar hebben soms afwijkende pinlabels t.o.v. de officiële Espressif DevKitC-1. Gebruik altijd de pinout uit §3.1 / §5.1 van dit document, niet de opdruk op het board.
+⚠️ **Clone-boards:** de 10 stuks AliExpress-boards (€65, 25 dec 2025) zijn clones — niet officieel Espressif. Ze werken identiek maar hebben soms afwijkende pinlabels t.o.v. de officiële Espressif DevKitC-1. Gebruik altijd de pinout uit §3.1 / §5.1 van dit document, niet de opdruk op het board.
 
 #### Strapping pins — nooit als input gebruiken
 
@@ -142,8 +138,8 @@ Gedetailleerde pinout per controller staat in §3.1 (HVAC), §4.1 (ECO), §5.1 (
 
 | Pin | Functie |
 |---|---|
-| IO1 | LDR1 analog (⚠️ spanningsdeler 10k pull-up naar 3V3!) |
-| IO2 | LDR2 analog (beam) (⚠️ zelfde spanningsdeler nodig als LDR1!) |
+| IO1 | LDR1 analog (⚠️ 10k pull-up naar 3V3!) |
+| IO2 | LDR2 analog (beam) |
 | IO3 | DS18B20 OneWire |
 | IO4 | NeoPixels data |
 | IO5 | MOV1 PIR |
@@ -168,24 +164,28 @@ Overzicht van alle aansluitingen die het Zarlar-shield moet voorzien per control
 
 | Connector | Pins | Voeding | ROOM | HVAC | ECO | Dashboard | Opmerking |
 |---|---|---|---|---|---|---|---|
-| **Roomsense** (RJ45) | 8 | 3V3 + GND | ✅ | — | ✅ | — | ROOM: DHT22, MOV1, Dust, LDR1 / ECO: IO1=relay, IO5=PWM pomp |
+| **Roomsense** (RJ45) | 8 | 5V + 3V3 + GND | ✅ | — | — | — | DHT22, MOV1 PIR, Sharp dust (LED+analog), LDR1 |
 | **OPTION** (RJ45) | 8 | 5V + 3V3 + GND | ✅ | — | — | — | MOV2 PIR, CO2 PWM, TSTAT, LDR2/beam |
 | **T-BUS** (3-pin) | 3 | 3V3 + GND | ✅ | ✅ | ✅ | — | DS18B20 OneWire — één bus, meerdere sensoren |
 | **Pixel-line** (3-pin) | 3 | 5V + GND | ✅ | — | — | 〇 | NeoPixel data + 5V voeding |
-| **I2C** (5-pin Qwiic) | 5 | VCC_5V + 3V3 + GND | ✅ | ✅ | — | — | SDA + SCL, 4.7k pull-ups naar 3.3V |
-| **SPI** (4-pin header) | 6 | 3V3 + GND | — | — | ✅ | — | IO20-23: CS, MOSI, MISO, SCK + 3V3 + GND |
-| **UART** (4-pin) | 4 | 3V3 + GND | 〇 | — | — | — | TX, RX + 3V3 + GND |
+| **I2C** (4-pin) | 4 | 3V3 + GND | ✅ | ✅ | — | — | SDA + SCL, 4.7k pull-ups naar 3.3V |
+| **SPI** (6-pin) | 6 | 3V3 + GND | — | — | ✅ | — | MAX31865 PT1000: CS, MOSI, MISO, SCK |
+| **Relay OUT** (2-pin) | 2 | — | — | — | ✅ | — | IO1: pomprelais ECO (actief-laag) |
+| **PWM OUT** (2-pin) | 2 | — | — | ✅ | ✅ | — | HVAC: ventilator IO20 / ECO: pomp IO5 |
+| **UART** (3-pin) | 3 | 3V3 + GND | 〇 | — | — | — | Optie voor serieel randapparaat |
 
 #### Voltage-specificaties per connector
 
 | Connector | Voedings-pin | Signaal-niveau | Opmerking |
 |---|---|---|---|
-| Roomsense | 3V3 | 3.3V | ROOM: PIR op 3.3V (beweging=LOW), DHT22 pull-up. ECO: zelfde connector — IO1=relay (actief-laag), IO5=PWM pomp. |
+| Roomsense | 5V (VIN) + 3V3 | 3.3V | HC-SR501 PIR draait op 3.3V — beweging = LOW. DHT22 op 3.3V met pull-up. |
 | OPTION | 5V (VIN) + 3V3 | 3.3V | MH-Z19 CO2 heeft **5V voedingspin** nodig; PWM-signaal is 3.3V. |
 | T-BUS | 3V3 | 3.3V | DS18B20 werkt op 3.3V met 4.7k pull-up naar 3.3V. |
 | Pixel-line | **5V (VIN)** | 3.3V | NeoPixels (WS2812) vereisen 5V voeding; 3.3V data-signaal werkt. |
-| I2C | 3V3 | 3.3V | 4.7k pull-ups naar **3.3V**. TSL2561 (ROOM): 4-pin header zodat VCC_5V onbereikbaar is. |
-| SPI | 3V3 + GND | 3.3V | MAX31865 heeft ingebouwde 3.3V LDO + level shifter — direct compatibel. |
+| I2C | 3V3 | 3.3V | 4.7k pull-ups naar **3.3V** (niet 5V zoals op de oude Photon-shield). |
+| SPI | 3V3 of 5V | 3.3V | MAX31865 module heeft ingebouwde 3.3V LDO + level shifter — werkt op 3.3V én 5V voeding. SPI-signalen van ESP32-C6 (3.3V) zijn direct compatibel. |
+| Relay OUT | — | 3.3V drive | IO1 actief-laag: LOW = relais AAN. Vrijloop-diode op relay coil! |
+| PWM OUT | — | 3.3V | `ledcAttach()` — 1 kHz, 8-bit (0–255). Externe driver nodig voor motor. |
 
 #### Toekomstige uitbreiding Dashboard
 
@@ -201,83 +201,6 @@ Het Dashboard-shield heeft momenteel geen IO-aansluitingen. Een **NeoPixel-matri
 | USB CDC On Boot | **Enabled** (verplicht voor Serial over USB-C) |
 | Upload (eerste keer) | USB |
 | Upload (daarna) | OTA via Arduino IDE → Sketch → Upload via OTA |
-
----
-
-### 1.8 Shield v1.0 — ontwerp en review
-
-**ESP32-C6 shield v1.0** — ontwerp iTroniX / FiDel, 30 dec 2025.
-
-#### Connectors
-
-| Connector | Type | Voeding | Signalen |
-|---|---|---|---|
-| **Roomsense** | RJ45 | 3V3 + GND | ROOM: DS18B20, DHT22, DUST-LED, DUST-ANA, LDR1, MOV1, T-BUS / ECO: IO1=relay, IO5=PWM |
-| **Option** | RJ45 | 5V + 3V3 + GND | TSTAT, MOV2, CO2, LDR2, Pixels |
-| **Pixel-line** | 3-pin header | 5V + GND | PIXELS (IO4) |
-| **I2C-2** | 5-pin JST SH (Qwiic) | VCC_5V + 3V3 + GND | SCL (IO11), SDA (IO13) |
-| **T-BUS** | 3-pin header | 3V3 + GND | DO (IO3) |
-| **Serial** | 4-pin header | 3V3 + GND | TX, RX |
-| **SPI ECO** | 4-pin header + 3V3 + GND | 3V3 + GND | IO20 CS, IO21 MOSI, IO22 MISO, IO23 SCK |
-| **Power IN** | 2-pin | 6–23V input | Via regelaar naar 5V |
-
-#### Passieve componenten
-
-| Ref | Waarde | Functie |
-|---|---|---|
-| PTC | 500 mA | Resetbare zekering op VCC_5V |
-| PTC | 500 mA | Resetbare zekering op 3V3 — beschermt ESP32-C6 bij kortsluiting op sensoren |
-
-**PTC 500 mA — voldoende voor alle aangesloten lasten:** de PIXEL-LINE connector voert enkel het 3.3V datasignaal naar de **PowerPixels** (eigen ontwerp Filip Delannoy) — de zware verlichtingscircuits worden aangestuurd via optocouplers en MOSFETs op aparte voedingscircuits, volledig gescheiden van het shield. Het shield draagt dus geen verlichtingsstromen.
-| U1 | 6–23V → 5V | Spanningsregelaar (knipbaar als externe 5V gebruikt wordt) |
-| C2 | 10 µF 25V X5R | Bulk afvlakking VCC_5V |
-| C4 | 0.1 µF 50V X7R | Ontkoppeling |
-| C5 | 10 µF 25V X5R | Bulk afvlakking 3V3 |
-| C1, C6, C7 | 0.1 µF 50V X7R | Ontkoppeling per rail |
-| R1, R2 | 4k7 | I2C pull-ups → 3V3 |
-| R3 | **33 Ω** | Serieregelaar PIXELS data-lijn (IO4) |
-| R4 | 499 Ω | Serieregelaar UART TX-lijn |
-
-#### Controller-footprint en voeding
-
-Het shield gebruikt de **ESP32-C6-DEVKITC-1-N8** 32-pin footprint. De AliExpress clone-boards passen hierop. Het 30-pin Dashboard-board past **niet** op dit shield.
-
-Voeding: 6–23V op Power IN → ingebouwde regelaar → 5V. De regelaar-jumper is knipbaar bij gebruik van externe 5V. PTC zekering 500 mA op VCC_5V.
-
-#### I2C connector — TSL2561 aansluiting
-
-De I2C connector heeft VCC_5V op pin 1. De TSL2561 lux-sensor (ROOM) heeft max 3.6V en zou bij 5V beschadigen. **Oplossing:** een 4-pin header op pins 2–5 maakt pin 1 (VCC_5V) fysiek onbereikbaar. Elegante hardwareoplossing zonder risico.
-
-| Module | Max VCC | Aansluiting |
-|---|---|---|
-| TSL2561 (lux, ROOM) | 3.6V | 4-pin header pins 2–5 — VCC_5V onbereikbaar |
-| MCP23017 (HVAC I/O expander) | 5.5V | Volledige 5-pin header mogelijk |
-
-#### ECO Boiler aansluitingen
-
-De ECO Boiler gebruikt twee bestaande connectors op het shield:
-
-**SPI — 4-pin header (IO20–IO23) + 3V3 + GND:**
-
-| Pin | Label | ECO-functie |
-|---|---|---|
-| IO20 | IO (CS) | SPI_CS → MAX31865 |
-| IO21 | IO (MOSI) | SPI_MOSI → MAX31865 |
-| IO22 | IO (MISO) | SPI_MISO → MAX31865 |
-| IO23 | IO (SCK) | SPI_SCK → MAX31865 |
-
-De 4-pin header heeft bijkomend 3V3 en GND voor de voeding van de MAX31865 module.
-
-**Relay + PWM — via ROOMSENSE RJ45 (IO1 + IO5):**
-
-Geen aparte connector nodig — dezelfde ROOMSENSE RJ45 wordt hergebruikt, maar IO1 en IO5 krijgen een andere functie bij de ECO-controller:
-
-| Pin | ROOM-gebruik | ECO-gebruik |
-|---|---|---|
-| IO1 | LDR1 analog | Pomprelais (actief-laag: LOW = AAN) |
-| IO5 | MOV1 PIR | PWM circulatiepomp (1 kHz, 8-bit) |
-
-⚠️ Vrijloop-diode verplicht op de relay coil. IO5 PWM vereist externe driver voor de pomp.
 
 ---
 
@@ -477,14 +400,14 @@ Crash-info tonen in `/settings`: laatste reden + teller + resetknop.
 | IO3 | `ONE_WIRE_PIN 3` | DS18B20 OneWire | 6× SCH boiler |
 | IO11 | `I2C_SCL 11` | I2C SCL → MCP23017 | `Wire.begin(13, 11)` — 4.7k pull-up naar 5V |
 | IO13 | `I2C_SDA 13` | I2C SDA → MCP23017 | 4.7k pull-up naar 5V |
-| IO20 | `VENT_FAN_PIN 20` | PWM ventilator | `ledcAttach(pin, 1000, 8)` — 3.3V PWM → externe OPAMP → 10V (vereist door Begetube ventilatie) |
+| IO20 | `VENT_FAN_PIN 20` | PWM ventilator | `ledcAttach(pin, 1000, 8)` — 1 kHz, 8-bit (0–255) |
 
 #### MCP23017 poortindeling
 
 | MCP pin | pinMode | Functie |
 |---|---|---|
 | 0–6 | OUTPUT | Relay circuits 1–7 (actief-laag: LOW = AAN) |
-| 7 | INPUT_PULLUP | Pomp feedback — actief gebruikt: vergelijkt verwachte vs. werkelijke pompstatus, ALERT in Serial bij afwijking |
+| 7 | INPUT_PULLUP | Pomp feedback |
 | 8 | OUTPUT (`RELAY_PUMP_SCH`) | Distributiepomp SCH |
 | 9 | OUTPUT (`RELAY_PUMP_WON`) | Distributiepomp WON |
 | 10–12 | INPUT_PULLUP | TSTAT inputs circuits (LOW = warmtevraag) |
@@ -492,35 +415,7 @@ Crash-info tonen in `/settings`: laatste reden + teller + resetknop.
 
 **Circuitnamen:** instelbaar per circuit via `/settings`. Default: `Circuit 1` … `Circuit 7`. In productie ingesteld op BB, WP, BK, ZP, EP, KK, IK.
 
-### 3.2 Testopstelling op shield v1.0
-
-Shield v1.0 is ook bruikbaar als testopstelling voor de HVAC controller. Vergeleken met ECO zijn **R1 en R2** extra nodig voor de I2C-bus naar de MCP23017.
-
-**Minimale SMD-bestukking voor HVAC testopstelling:**
-
-| Component | Waarde | Reden |
-|---|---|---|
-| PTC×2 | 500 mA | Beveiliging voedingslijnen |
-| C2, C5 | 10µF 25V X5R | Bulk afvlakking |
-| C4 | 0.1µF 50V X7R | Ontkoppeling |
-| R3 | 4k7 | OneWire pull-up voor DS18B20 (T-BUS) |
-| **R1, R2** | **4k7** | **I2C pull-ups voor MCP23017 — extra t.o.v. ECO!** |
-
-**Niet nodig voor HVAC:** R4, R5, C1/C6/C7, LED1, SPI header.
-
-**Aansluitingen testopstelling (manueel bedraden):**
-
-| Connector | Pins | Functie |
-|---|---|---|
-| T-BUS 3-pin | IO3 + 3V3 + GND | DS18B20 sensoren |
-| I2C connector | IO11 (SCL) + IO13 (SDA) + 3V3 + GND | MCP23017 I/O expander |
-| SPI header IO20 | IO20 + GND | PWM ventilator → AnaBoX (of gelijkwaardige OPAMP) → 10V (Begetube) |
-
-⚠️ **IO20 PWM ventilator:** zelfde probleem als ECO — ESP32-C6 levert 3.3V, Begetube ventilatie vereist 0–10V. De AnaBoX (zie §4.1) is ook hiervoor bruikbaar. Versterking R3/R2 = 3.3× met 12V voeding geeft ~10.6V uitgang.
-
-⚠️ De I2C pull-ups (R1, R2) zijn verplicht — zonder pull-ups werkt de MCP23017 niet en reageren alle relais niet.
-
-### 3.3 Libraries (HVAC)
+### 3.2 Libraries (HVAC)
 
 | Library | Gebruik |
 |---|---|
@@ -530,14 +425,14 @@ Shield v1.0 is ook bruikbaar als testopstelling voor de HVAC controller. Vergele
 | `ArduinoJson` | JSON polling van room controllers + ECO |
 | `Preferences` | NVS opslag |
 
-### 3.4 Heap-baseline (v1.18)
+### 3.3 Heap-baseline (v1.18)
 
 ```
 Setup:   free=~180KB  largest=~55KB
 Runtime: largest_block stabiel >35KB  ✅
 ```
 
-### 3.5 Matter endpoints (v1.18)
+### 3.4 Matter endpoints (v1.18)
 
 | # | Type | Variabele | Opmerking |
 |---|---|---|---|
@@ -545,12 +440,52 @@ Runtime: largest_block stabiel >35KB  ✅
 | EP2–EP8 | MatterOnOffPlugin | `circuits[0..6]` | Kringen 1–7 |
 | EP9 | MatterFan | `vent_percent` | Ventilatie % |
 
-### 3.6 Versiehistorie HVAC (recente wijzigingen)
+### 3.5 Versiehistorie HVAC (recente wijzigingen)
 
 | Versie | Wijziging |
 |---|---|
 | v1.19 | Matter `onChangeOnOff` callback: `mcp.digitalWrite()` onmiddellijk toegevoegd — relais reageren nu direct vanuit Apple Home |
 | v1.18 | ECO JSON keys: ETopH→b, EBotL→g, EAv→h, EQtot→i |
+
+### 3.6 HVAC /json output (keys a..ae → naar Zarlar → Google Sheets)
+
+Geverifieerd op 26 maart 2026 via upload `ESP32_C6_MATTER_HVAC_v1_19.ino`.
+
+| Key | Sheet | Label | Eenheid | Opmerking |
+|-----|-------|-------|---------|-----------|
+| `a` | B | uptime_sec | s | |
+| `b` | C | KST1 (sch_temps[0]) | °C | Boiler top |
+| `c` | D | KST2 (sch_temps[1]) | °C | |
+| `d` | E | KST3 (sch_temps[2]) | °C | |
+| `e` | F | KST4 (sch_temps[3]) | °C | |
+| `f` | G | KST5 (sch_temps[4]) | °C | |
+| `g` | H | KST6 (sch_temps[5]) | °C | Boiler bodem |
+| `h` | I | KSAv (gemiddelde boiler) | °C | |
+| `i` | J | duty_4h C1 (BB) | int | Duty-cyclus circuit 1 |
+| `j` | K | duty_4h C2 (WP) | int | |
+| `k` | L | duty_4h C3 (BK) | int | |
+| `l` | M | duty_4h C4 (ZP) | int | |
+| `m` | N | duty_4h C5 (EP) | int | |
+| `n` | O | duty_4h C6 (KK) | int | |
+| `o` | P | duty_4h C7 (IK) | int | |
+| `p` | Q | heating_on C1 (BB) | 0/1 | Relais actief |
+| `q` | R | heating_on C2 (WP) | 0/1 | |
+| `r` | S | heating_on C3 (BK) | 0/1 | |
+| `s` | T | heating_on C4 (ZP) | 0/1 | |
+| `t` | U | heating_on C5 (EP) | 0/1 | |
+| `u` | V | heating_on C6 (KK) | 0/1 | |
+| `v` | W | heating_on C7 (IK) | 0/1 | |
+| `w` | X | total_power | kW | Totaal vermogen alle actieve kringen |
+| `x` | Y | vent_percent | % | Incl. vent_override indien actief |
+| `y` | Z | sch_on | 0/1 | Distributiepomp SCH actief |
+| `z` | AA | last_sch_pump.kwh_pumped | kWh | |
+| `aa` | AB | won_on | 0/1 | Distributiepomp WON actief |
+| `ab` | AC | last_won_pump.kwh_pumped | kWh | |
+| `ac` | AD | RSSI | dBm | |
+| `ad` | AE | FreeHeap% | % | |
+| `ae` | AF | LargestBlock | KB | |
+
+⚠️ **HVAC gebruikt key `ac` voor RSSI** — conform alle andere controllers (ECO gebruikt afwijkend `p`).
 
 ### 3.7 Openstaande punten HVAC
 
@@ -565,104 +500,15 @@ Runtime: largest_block stabiel >35KB  ✅
 
 | Component | Detail |
 |---|---|
-| Board | ESP32-C6 32-pin clone (MAC `58:8C:81:32:2B:D4`) |
+| Board | ESP32-C6 32-pin clone (blote controller, MAC `58:8C:81:32:2B:D4`) |
 | Voeding | Test: 5V USB-C / Productie: 5V via VIN (Zarlar shield, PTC 500 mA) |
 | Static IP | 192.168.0.71 |
 | Temperatuursensoren | 6× DS18B20 op OneWire (IO3) — 2 per boilerlaag: Top/Mid/Bot × H/L |
-| PT-sensor (collector) | MAX31865 SPI-module (CS=IO20, MOSI=IO21, MISO=IO22, SCK=IO23) — **instelbaar PT100 of PT1000** |
-| Pomprelais | IO1 — digitaal aan/uit (actief-laag) |
-| Circulatiepomp | PWM op IO5 (0–255), freq 1 kHz, 8-bit resolutie → via **AnaBoX** naar 0–10V (OEG pomp vereist min. 4V) |
+| Zonnecollector | PT1000 via MAX31865 SPI-module (CS=IO20, MOSI=IO21, MISO=IO22, SCK=IO23) |
+| Pomprelais | IO1 — digitaal aan/uit |
+| Circulatiepomp | PWM op IO5 (0–255), freq 1 kHz, 8-bit resolutie |
 
-#### AnaBoX — PWM spanningsomzetter
-
-De OEG circulatiepomp vereist een **0–10V analoog stuursignaal** (minimum 4V). De ESP32-C6 levert slechts 3.3V op IO5. De AnaBoX (eigen iTroniX ontwerp, v1.0) zet dit om via een LM324N op-amp.
-
-| Component | Waarde | Functie |
-|---|---|---|
-| IC1A | LM324N | Non-inverting versterker (1 van 4 op-amps) |
-| R1 | 10kΩ | Ingang pull-down |
-| R2 | 10kΩ | Feedback |
-| R3 | 33kΩ | Versterking: R3/R2 = 3.3× |
-| C1 | 33µF | Uitgangsafvlakking |
-
-**Voeding:** 7.5–12V (uitgang is ~1.4V lager dan voedingsspanning → minimum 6V nodig)
-
-**Werking:** IO5 PWM (0–3.3V) → AnaBoX → ANAOUT (0–10V) → OEG pomp
-
-```
-IO5 (3.3V PWM) → PWMIN → LM324N (gain 3.3×) → ANAOUT → OEG pomp
-```
-
-⚠️ De AnaBoX is **verplicht** voor de OEG pomp — zonder omzetter reageert de pomp niet onder 4V.
-
-#### PT-sensor — type en configuratie
-
-De ECO sketch ondersteunt zowel PT100 als PT1000 via de `/settings` UI:
-
-| Setting | RREF | RNOMINAL | Gebruik |
-|---|---|---|---|
-| **PT100** (default) | 430 Ω | 100 Ω | Testbord / proefopstelling |
-| **PT1000** | 4000 Ω | 1000 Ω | Dakcollector productie |
-
-- Omschakelen via `/settings` → "PT-sensor type" → herstart vereist
-- Temperatuurberekening via `pt1000.temperature(RNOMINAL, RREF)` — Callendar-Van Dusen polynoom (nauwkeuriger dan lineaire formule)
-- Altijd **2-wire** configuratie (`MAX31865_2WIRE`) — voldoende nauwkeurig voor pompsturing (±0.5–2°C fout aanvaardbaar bij ΔT-drempel van 3°C)
-
-#### PT100 sensor — identificatie
-
-⚠️ **Meet altijd de weerstand bij kamertemperatuur voor aansluiting:**
-- ~108 Ω bij 20°C → **PT100** ✅
-- ~1078 Ω bij 20°C → PT1000
-
-#### MAX31865 module — soldeerbruggen (paarse Chinese clone)
-
-| Brug | Status | Betekenis |
-|---|---|---|
-| "2/3 Wire" links | **Gesloten** | 3-wire modus (module-instelling) |
-| "2 Wire" rechts | Open | 2-wire niet actief op module |
-| "24/3" druppeltjes | **Onaangeroerd** | Rref selectie via weerstand |
-| Rref weerstand | **427 Ω ≈ 430 Ω** | Correct voor PT100 ✅ |
-
-⚠️ Ondanks "2/3 Wire" gesloten op de module gebruikt de sketch `MAX31865_2WIRE` — dit is correct en bewust. De module-jumper en de sketch-instelling zijn onafhankelijk.
-
-#### Relaismodule — voeding (duaal relaisblok met optocoupler)
-
-| Pin module | Aansluiting | Reden |
-|---|---|---|
-| JD-VCC | 5V | Relaisspoel (Tongling JQC-3FF is 5V DC coil) |
-| VCC | 3V3 | Optocoupler-kant — zodat IO1 (3.3V) de ingang kan sturen |
-| GND | GND | Gemeenschappelijk |
-| IN1 | IO1 | Stuursignaal (actief-laag: LOW = relais AAN) |
-
-⚠️ **JD-VCC jumper verwijderen** — scheidt relay-spoel (5V) van optocoupler-kant (3V3) galvanisch.
-
-### 4.2 Testopstelling op shield v1.0
-
-Shield v1.0 heeft geen SMD-componenten — deze worden manueel gesoldeerd voor gebruik als testopstelling. De shield is volledig bruikbaar voor ECO mits onderstaande componenten aangebracht worden.
-
-**Minimale SMD-bestukking voor ECO testopstelling:**
-
-| Component | Waarde | Reden |
-|---|---|---|
-| PTC×2 | 500 mA | Beveiliging voedingslijnen |
-| C2, C5 | 10µF 25V X5R | Bulk afvlakking |
-| C4 | 0.1µF 50V X7R | Ontkoppeling |
-| R3 | 4k7 | OneWire pull-up voor DS18B20 (T-BUS) |
-
-**Niet nodig voor ECO:** R1, R2 (I2C pull-ups — ECO gebruikt geen I2C), R4, R5, C1/C6/C7, LED1.
-
-**Aansluitingen testopstelling (manueel bedraden):**
-
-| Connector | Pins | Functie |
-|---|---|---|
-| ROOMSENSE RJ45 | IO1 + GND + 5V | Relaismodule (JD-VCC=5V, VCC=3V3, GND, IN1=IO1) |
-| ROOMSENSE RJ45 | IO5 + GND | PWM → AnaBoX PWMIN → ANAOUT → OEG pomp |
-| T-BUS 3-pin | IO3 + 3V3 + GND | DS18B20 sensoren |
-| SPI 4-pin header | IO20–23 + 3V3 + GND | MAX31865 PT-sensor (6-aderig, 3V3-uitgang module niet verbinden!) |
-
-⚠️ **AnaBoX voeding:** aparte 7.5–12V voeding nodig voor de LM324N — niet vanuit het shield.
-
-### 4.3 ECO /json output (keys a..s → naar Zarlar → Google Sheets)
+### 4.2 ECO /json output (keys a..s → naar Zarlar → Google Sheets)
 
 | Key | Sheet | Label | Eenheid |
 |-----|-------|-------|---------|
@@ -688,22 +534,16 @@ Shield v1.0 heeft geen SMD-componenten — deze worden manueel gesoldeerd voor g
 
 ⚠️ **ECO gebruikt key `p` voor RSSI** — alle andere controllers gebruiken `ac`. Kritiek voor Dashboard RSSI-extractie.
 
-### 4.4 Versiehistorie ECO (recente wijzigingen)
+### 4.3 Openstaande punten ECO
 
-| Versie | Wijziging |
-|---|---|
-| v1.23 | PT-sensor type instelbaar via UI: PT100 (testbord) / PT1000 (dakcollector). `readPT1000()` gebruikt Adafruit `pt1000.temperature()` — Callendar-Van Dusen. 2-wire gestandaardiseerd. |
-| v1.22 | Matter geïntegreerd, heap-monitoring, crash-log NVS, chunked streaming UI |
-| v1.21 | Google Sheets logging naar Dashboard gedelegeerd |
-
-### 4.5 Openstaande punten ECO
-
-- **PWM output LED**: visuele indicator voor pompsnelheid — eerst IO5 stroom meten voor aansluiting (pompdriver type onbekend, mogelijk externe driver nodig)
+- **Heap-analyse**: baseline meten, ArduinoJson v7 check, `String(i)` NVS-keys → `snprintf`
 - **kWh-berekening**: echte `Q = m × Cp × ΔT / 3600` per pompbeurt
-- **Heap-baseline v1.23**: meten na Matter-activatie op testopstelling
+- **Reactietijden**: IO-pinnen direct aansturen vanuit webUI-handlers
+- **Versieheader**: `* /` met spatie in commentaar
 
 ---
 
+## 5. ROOM Controller — specifiek
 
 ### 5.1 Hardware
 
@@ -721,8 +561,8 @@ Shield v1.0 heeft geen SMD-componenten — deze worden manueel gesoldeerd voor g
 
 | ESP32-C6 Pin | `#define` | Photon | Functie | Opmerking |
 |---|---|---|---|---|
-| IO1 | `LDR_ANALOG 1` | A3 | LDR1 analog | ⚠️ 10k spanningsdeler (pull-up IO1→3V3) op shield! |
-| IO2 | `OPTION_LDR 2` | A7 | LDR2 analog (beam/MOV2) | ⚠️ Zelfde spanningsdeler nodig als LDR1! |
+| IO1 | `LDR_ANALOG 1` | A3 | LDR1 analog | ⚠️ 10k pull-up IO1→3V3 op shield! |
+| IO2 | `OPTION_LDR 2` | A7 | LDR2 analog (beam/MOV2) | 0–3.3V, geschaald 0–100 |
 | IO3 | `ONE_WIRE_PIN 3` | D3 | DS18B20 OneWire | 3.3V pull-up |
 | IO4 | `NEOPIXEL_PIN 4` | D4 | NeoPixels data | NEO_GRB + NEO_KHZ800 |
 | IO5 | `PIR_MOV1 5` | D5 | MOV1 PIR | INPUT_PULLUP — beweging = LOW |
@@ -735,7 +575,7 @@ Shield v1.0 heeft geen SMD-componenten — deze worden manueel gesoldeerd voor g
 | IO18 | `CO2_PWM 18` | A4 | CO2 PWM input (MH-Z19) | ⚠️ MH-Z19 heeft 5V voedingspin nodig! |
 | IO19 | `PIR_MOV2 19` | A5 | MOV2 PIR | INPUT_PULLUP — beweging = LOW |
 
-⚠️ **Beide LDRs (IO1 en IO2) hebben een spanningsdeler nodig** — een 10k pull-up naar 3V3 vormt een spanningsdeler met de LDR-weerstand zodat de analoge waarde correct geschaald wordt naar 0–3.3V. IO1 heeft deze al op de Roomsense-shield; IO2 (OPTION-connector) heeft dezelfde schakeling nodig.
+⚠️ **IO1 heeft een 10k pull-up naar 3V3** op de Roomsense-shield — beïnvloedt analoge meting van LDR1.
 
 ⚠️ **MH-Z19 CO2-sensor** heeft aparte 5V voedingspin — PWM-signaal zelf is 3.3V compatibel.
 
@@ -889,11 +729,16 @@ Elke pagina vervangt `<style>...</style>` door `<link rel="stylesheet" href="/st
 
 | Component | Detail |
 |---|---|
-| Board | ESP32-C6 **32-pin** clone (MAC `A8:42:E3:4B:FA:BC`) |
+| Board | ESP32-C6 **30-pin** clone (blote controller, MAC `A8:42:E3:4B:FA:BC`) |
 | Voeding | Test: 5V USB-C / Productie: 5V via VIN (Zarlar shield, PTC 500 mA) |
 | Static IP | 192.168.0.60 |
 | WebServer | `WebServer` (blocking) — bewust, niet `AsyncWebServer` |
-| Sketch | `ESP32_C6_Zarlar_Dashboard_17mar_wifi.ino` v3.0 |
+| Sketch | `ESP32_C6_Zarlar_Dashboard_MATTER_v4_5.ino` v4.5 |
+| Statusmatrix | 16×16 WS2812B op IO4 via Pixel-line connector (shield R3=33Ω) |
+
+⚠️ **30-pin vs 32-pin:** het Dashboard gebruikt een 30-pin board. De pinvolgorde verschilt van het 32-pin board — gebruik de pinout van het 30-pin board bij hardware-aanpassingen. IO14 ontbreekt op beide formfactors.
+
+⚠️ **Matrix voeding:** de 16×16 WS2812B matrix (256 pixels) wordt rechtstreeks op 5V gevoed — **niet** via de PTC-zekering van het shield (max 500 mA). Bij volle helderheid kan de matrix >3A trekken. Aparte 5V voeding verplicht.
 
 ### 6.2 Wat het Dashboard doet
 
@@ -901,6 +746,7 @@ Elke pagina vervangt `<style>...</style>` door `<link rel="stylesheet" href="/st
 - POST data naar Google Sheets via Google Apps Script
 - Serveert web-UI op `http://192.168.0.60/`
 - Stuurt HOME/UIT broadcast naar alle actieve ROOM controllers
+- Toont live systeemstatus op een **16×16 WS2812B statusmatrix** (zie §6.8)
 - WiFi Strength Tester op `/wifi`
 - Matter HOME/UIT toggle (1 endpoint: `MatterOnOffPlugin`)
 
@@ -969,259 +815,144 @@ Heap-impact: 3 primitieven (`bool` + 2× `int` = 6 bytes permanent).
 
 Scan-resultaat: alle netwerken behalve eigen SSID, max 4, gesorteerd sterkste eerst. ESP32-C6 is 2.4GHz-only → geen channel-filter.
 
-### 6.8 Openstaande punten Dashboard
+### 6.8 Statusmatrix 16×16 WS2812B
 
-- **Heap-baseline meten** na Matter-activatie (eerste flash op 16MB controller)
+De Zarlar Matrix is een **16×16 WS2812B LED-paneel** (256 pixels, serpentine adressering) gemonteerd in een houten kader met glazen voorkant. Een geprinte transparant bovenop het glas labelleert elke pixel. Samen vormt dit een permanent zichtbaar statusdisplay dat de toestand van het volledige huis toont — zonder scherm of app.
+
+#### Fysieke opstelling
+
+| Component | Detail |
+|---|---|
+| Panel | 16×16 WS2812B, 160×160mm, serpentine adressering, kabelingang onderaan |
+| Kader | Bleekhouten lasercut omlijsting met glazen voorkant |
+| Achtergrond | Vergrijsd hout — matrix verzonken achter het glas |
+| Transparant | A4 kleurenlaserprint op transparantfolie — labels boven elke pixel |
+| Data | IO4 via Pixel-line connector (shield R3=33Ω aanwezig) |
+| Voeding | 5V rechtstreeks op matrix — **niet** via shield PTC |
+| Helderheid | Instelbaar via `/settings` UI (NVS key `matrix_br`, default 60) |
+
+#### Rij-indeling
+
+| Rij | Controller | Type | Kleur groep |
+|-----|-----------|------|------------|
+| 0 | S-HVAC | Systeem | Rood |
+| 1 | S-ECO | Systeem | Oranje |
+| 2 | S-OUTSIDE | Gereserveerd | Donkergrijs (nog niet actief) |
+| 3 | S-ACCESS | Gereserveerd | Donkergrijs (nog niet actief) |
+| 4 | — | Separator | Lichtblauw — "ROOMS" |
+| 5 | R-BandB | Room | Blauw |
+| 6 | R-BADK | Room | Blauw |
+| 7 | R-INKOM | Room | Blauw |
+| 8 | R-KEUKEN | Room | Blauw |
+| 9 | R-WASPL | Room | Blauw |
+| 10 | R-EETPL | Room | Blauw |
+| 11 | R-ZITPL | Room | Blauw |
+| 12–15 | — | Leeg | Donkergrijs |
+
+#### Kolom-indeling HVAC (rij 0)
+
+| Col | JSON key | Label | Kleurlogica |
+|-----|----------|-------|------------|
+| 0 | — | Status | Groen=online, rood=offline |
+| 1–7 | `p`–`v` | C1–C7 (BB/WP/BK/ZP/EP/KK/IK) | Groen=verwarming aan, dim=uit |
+| 8 | `y` | Pomp SCH | Cyaan=actief |
+| 9 | `aa` | Pomp WON | Cyaan=actief |
+| 10 | `x` | Ventilatie % | Cyaan gradient 0–100% |
+| 11 | `h` | KSAv boiler gem. | Boilertemp kleurschaal |
+| 12–13 | — | Gereserveerd | Dim |
+| 14 | `ae` | Heap KB | Groen>35 / geel>25 / rood |
+| 15 | `ac` | RSSI | Groen≥-60 / oranje / rood |
+
+#### Kolom-indeling ECO (rij 1)
+
+| Col | JSON key | Label | Kleurlogica |
+|-----|----------|-------|------------|
+| 0 | — | Status | Groen=online, rood=offline |
+| 1 | `l` | Tsun | Collector temp — blauw→groen→oranje→rood |
+| 2 | `m` | dT | Rendement (Tsun−Tboiler) — groen=goed |
+| 3 | `b` | ETopH | Boiler laag 1 — boilerTempPx |
+| 4 | `c` | ETopL | Boiler laag 2 — boilerTempPx |
+| 5 | `d` | EMidH | Boiler laag 3 — boilerTempPx |
+| 6 | `e` | EMidL | Boiler laag 4 — boilerTempPx |
+| 7 | `f` | EBotH | Boiler laag 5 — boilerTempPx |
+| 8 | `g` | EBotL | Boiler laag 6 — boilerTempPx |
+| 9 | `h` | EAv | Boiler gemiddeld — boilerTempPx |
+| 10 | `n` | PWM pomp | Cyaan gradient 0–255 |
+| 11 | `k` | Yield vandaag | kWh — groen gradient |
+| 12 | `i` | EQtot | Energie-inhoud — amber gradient |
+| 13 | `j` | dEQ | Delta kWh — groen=laden, zwart=stilstand |
+| 14 | `q` | FreeHeap% | Groen>35% / geel>20% / rood |
+| 15 | `p` | RSSI ⚠️ | Key `p` — afwijkend t.o.v. andere controllers! |
+
+#### Kolom-indeling ROOM (rijen 5–11)
+
+| Col | JSON key | Label | Kleurlogica |
+|-----|----------|-------|------------|
+| 0 | — | Status | Groen=online, rood=offline |
+| 1 | `v` | HOME | Blauw=HOME, dim=WEG |
+| 2 | `b` | Verwarming | Rood=aan, dim=uit |
+| 3 | `e` | Temp DHT22 | Blauw<18° / groen / geel / rood>26° |
+| 4 | `h` | Vochtigheid | Groen<50% / geel / oranje / rood>85% |
+| 5 | `k` | CO2 | Groen<800 / geel / oranje / rood≥1500 ppm |
+| 6 | `y` | MOV1 | Warm wit=beweging, dim=stil |
+| 7 | `z` | MOV2 | Warm wit=beweging, dim=stil |
+| 8 | `d` | TSTAT | Rood=warmtevraag, dim=uit |
+| 9 | `j` | Dauw alert | Rood=alert, dim blauw=OK |
+| 10 | `q`/`r`/`s` | Kamerkleur | Werkelijke RGB van NeoPixels (geschaald) |
+| 11 | `o` | Dag/Nacht | Geel=dag, donker purper=nacht |
+| 12 | `m` | Licht LDR1 | Geel omgekeerd: fel=donker in kamer |
+| 13 | `t` | Pixels aan | Wit, evenredig met aantal `1`s in pixel_on_str |
+| 14 | `ae` | Heap KB | Groen>35 / geel>25 / rood |
+| 15 | `ac` | RSSI | Groen≥-60 / oranje / rood |
+
+#### Kleurschalen (gedeeld)
+
+| Schaal | Functie | Kleuren |
+|--------|---------|---------|
+| `boilerTempPx()` | ECO boilertemperatuur | Blauw<40° → cyaan/groen 40–60° → oranje 60–75° → rood>75° |
+| `tempPx()` | Kamertemperatuur | Blauw<18° → groen 18–22° → geel 22–26° → rood>26° |
+| `rssiPx()` | WiFi signaalsterkte | Groen≥-60 → geelgroen≥-70 → oranje≥-80 → rood<-80 dBm |
+| `heapPx()` | Heap largest block | Groen>35KB → geel 25–35KB → rood<25KB |
+| `cyanLevel()` | Ventilatie / PWM | Donker cyaan (0%) → helder cyaan (100%) |
+| `statusPx()` | Controller status | Groen=online · rood=offline · geel=pending · grijs=inactief |
+
+#### Boot-animatie (v4.2+)
+
+Bij elke herstart doorloopt de matrix een korte animatie:
+1. **Rode pixel** met lichtgevend staartje loopt door rij 0 (HVAC) en rij 1 (ECO)
+2. **Blauwe pixel** met staartje loopt door rijen 5→11 (alle zeven rooms)
+3. Korte witte flash op alle actieve rijen → matrix wordt donker → live data start
+
+#### Web-endpoints matrix
+
+| Endpoint | Functie |
+|----------|---------|
+| `/matrix_bright?v=N` | Helderheid instellen (0–255) + NVS opslaan |
+| `/matrix_test` | Testpatroon activeren (regenboog per rij) |
+| `/matrix_update` | Forceer onmiddellijke live data refresh |
+
+Serial commando's: `matrix-test`, `matrix-update`
+
+### 6.9 Openstaande punten Dashboard
+
 - **OTA testen** — nog niet gedaan op Dashboard
 - **Matter pairing** uitvoeren en testen met Apple Home
+- **Heap-baseline** meten na Matter-activatie + matrix
 
 ---
 
-## 7. PowerPixels — ControlpiXel systeem
-
-### 7.1 Concept
-
-**PowerPixels** zijn een eigen ontwerp van iTroniX / Filip Delannoy. Ze combineren de eenvoudige NeoPixel-aansturing (WS2812B protocol, 3.3V datasignaal) met zware verlichtingscircuits via galvanische scheiding.
-
-```
-ESP32-C6 IO4 (3.3V)
-        │
-        ▼
-  NeoPixel chip (WS2812B)
-        │
-   Optocouplers
-        │
-   MOSFET gates
-        │
-   3–24V verlichtingscircuits (aparte voeding, aparte GND)
-```
-
-De ESP32-C6 en het shield dragen **geen verlichtingsstromen** — enkel het 3.3V datasignaal gaat via de PIXEL-LINE connector. De zware stromen lopen volledig gescheiden op eigen voedingscircuits.
-
-### 7.2 ControlpiXel TRIO v1.0
-
-| Kenmerk | Detail |
-|---|---|
-| Ontwerp | iTroniX / FiDel — v1.0, 1 okt 2020 |
-| Kanalen | 3 — R, G, B (afzonderlijk aanstuurbaar) |
-| Protocol | NeoPixel / WS2812B (daisy-chain via DI → DO) |
-| Voedingsspanning | 3–24V op aparte PGND |
-| Scheiding | Optocouplers → MOSFET gates |
-| Extra | PWM-OUT beschikbaar als bijkomende uitgang |
-
-### 7.3 Koppeling met ROOM-controller sketch
-
-De ROOM-sketch gebruikt de standaard `Adafruit_NeoPixel` library. De ControlpiXel TRIO ziet er vanuit de sketch identiek uit als een gewone NeoPixel-strip.
-
-**Configuratie:**
-
-| NVS-sleutel | Default | Beschrijving |
-|---|---|---|
-| `pixels_num` | 8 | Aantal PowerPixels (1–30, instelbaar via `/settings`) |
-| `pixel_nick_N` | — | Nickname per pixel (bijv. "Bureaulamp", "Spots") |
-| `pixel_on_N` | false | Aan/uit toestand per pixel (persistent in NVS) |
-| `pixel_user_on_N` | false | Manuele intentie per pixel |
-| `pixel_mode_0` | 0 | Pixel 0 modus: 0 = AUTO (PIR MOV1), 1 = MANUEEL |
-| `pixel_mode_1` | 0 | Pixel 1 modus: 0 = AUTO (PIR MOV2), 1 = MANUEEL |
-
-**Pixellogica:**
-
-| Pixel | Type | Gedrag |
-|---|---|---|
-| 0 | MOV-pixel | AUTO: aan bij beweging MOV1 + donker. MANUEEL: altijd aan (vaste kleur) |
-| 1 | MOV-pixel | AUTO: aan bij beweging MOV2 + donker (enkel als `mov2_enabled`). MANUEEL: altijd aan |
-| 2 … pixels_num-1 | Normale pixels | Aan/uit via webUI, Matter of NVS |
-
-**Boot-gedrag:** pixels buiten `pixels_num` worden bij boot expliciet gewist (`updateLength(30)` + `clear()` + `show()`), daarna teruggeschaald naar `pixels_num`. Voorkomt spookpixels op een langere fysieke strip.
-
-### 7.4 Matter-endpoints voor pixels (ROOM v2.10)
-
-| Endpoint | Type | Wat het aanstuurt |
-|---|---|---|
-| EP5 | `MatterColorLight` | Globale kleur (R/G/B) voor alle pixels — on/off altijd `true` |
-| EP6 | `MatterOnOffLight` | SW1: pixel 0 MOV-override (MANUEEL/AUTO) |
-| EP7 | `MatterOnOffLight` | SW2: pixel 1 aan/uit |
-| EP8 | `MatterOnOffLight` | SW3: pixels 2…pixels_num-1 samen aan/uit |
-
-⚠️ **`MatterColorLight` niet `MatterEnhancedColorLight`** — de Enhanced variant blokkeert de "aparte tegels" optie in Apple Home.
-
-⚠️ **Color light on/off wordt genegeerd** — altijd op `true` gehouden. Schakelen gebeurt via de drie `MatterOnOffLight` endpoints.
-
-### 7.5 Toekomstig: PowerPixels op Dashboard
-
-Een NeoPixel-matrix (of ControlpiXel) is voorzien als toekomstige uitbreiding op het Zarlar Dashboard-shield. Doel: visuele statusweergave van alle controllers (kleur per controller = online/offline/alarm, of live heatmap van verwarmingskringen). Hiervoor is een PIXEL-LINE aansluiting (5V + GND + data IO4) te voorzien op het Dashboard-shield.
-
----
-
-## 8. Schimmelbescherming via vochtigheid
+## 7. Schimmelbescherming via vochtigheid
 
 Elke ROOM controller meet lokaal de luchtvochtigheid. Bij overschrijding van een drempelwaarde beslist de room controller autonoom om ventilatie te vragen via JSON key `g` (Vent_percent). De HVAC neemt de hoogste ventilatievraag van alle zones en stuurt de centrale ventilator aan. De volledige schimmelbeschermingslogica zit in de room controllers — de HVAC is enkel uitvoerder.
 
 ---
 
-## 9. Shield fabricage — JLCPCB workflow
-
-### 9.1 Software vereisten
-
-| Tool | Versie | OS | Opmerking |
-|---|---|---|---|
-| **Eagle CAD** | **9.6.2** | macOS Catalina 10.15+ | ⚠️ Eagle 7.7.0 crasht bij CAM export op macOS 10.15+ — altijd 9.6.2 gebruiken |
-| Eagle 9.6.2 download | — | — | https://eagle-updates.circuits.io/downloads/latest.html |
-
-⚠️ **Eagle 7.7.0 is onbruikbaar voor Gerber-export op moderne macOS** — crasht met `EXC_BAD_ACCESS (SIGSEGV)` bij Process Job, zowel op Apple Silicon (Rosetta) als native Intel. Dit is een bug in Eagle 7.7.0 zelf, niet een OS-probleem. Eagle 9.6.2 werkt correct op Catalina ondanks de verouderde systeemvereistenlijst in de installer.
-
-### 9.2 CAM files — juiste versie per Eagle versie
-
-| Eagle versie | CAM file | Download |
-|---|---|---|
-| 9.6.2 | `jlcpcb_2_layer_v9.cam` | https://raw.githubusercontent.com/JLCPCBofficial/jlcpcb-eagle/master/cam/jlcpcb_2_layer_v9.cam |
-| 7.2–8.5.2 | `jlcpcb_2_layer_v72.cam` | https://raw.githubusercontent.com/JLCPCBofficial/jlcpcb-eagle/master/cam/jlcpcb_2_layer_v72.cam |
-
-Sla de CAM file op in `~/Documents/EAGLE/cam/` — dan verschijnt hij automatisch in het Control Panel onder CAM Jobs.
-
-### 9.3 Stap 1 — Ground plane genereren (ratsnest)
-
-De ground plane in Eagle is een "polygon pour" die **niet bewaard wordt** in het .brd bestand. Dit moet altijd opnieuw gedaan worden vlak vóór de CAM export.
-
-1. Open het `.brd` bestand in Eagle — Board venster actief
-2. Typ in de commandolijn onderaan: `ratsnest` → Enter
-3. De ground plane verschijnt als gevulde zones
-4. Controleer visueel: geen onverwachte isolaties of eilanden?
-5. Resetten indien nodig: `ripup @;` → Enter → dan opnieuw `ratsnest`
-
-⚠️ **Sla het .brd bestand NIET op na ratsnest** — anders bewaar je de gevulde polygons en kunnen toekomstige edits problemen geven.
-
-### 9.4 Stap 2 — Gerber files genereren
-
-1. Open de CAM Processor via het icoon bovenaan in het Board venster
-2. Laad de JLCPCB job: in Eagle 9.x via de **Load** knop of **Open Job** bovenaan het CAM Processor venster → selecteer `jlcpcb_2_layer_v9.cam`
-3. De secties verschijnen als tabs: Board Outline, Drill File, Top Copper Layer, etc.
-4. Klik **Process Job** → alle bestanden worden gegenereerd in één ZIP
-
-**Gegenereerde bestanden (11 stuks voor 2-laags board):**
-
-| Extensie | Inhoud |
-|---|---|
-| `.GTL` | Top copper |
-| `.GBL` | Bottom copper |
-| `.GTS` | Top soldermask |
-| `.GBS` | Bottom soldermask |
-| `.GTO` | Top silkscreen |
-| `.GBO` | Bottom silkscreen |
-| `.GKO` | Board outline |
-| `.XLN` | Drill file (Excellon) |
-| + diverse | Paste, drill info, etc. |
-
-⚠️ Negeer de `.gpi` en `.dri` bestanden — niet nodig voor JLCPCB.
-
-### 9.5 Stap 3 — BOM en CPL genereren (voor SMD assemblage)
-
-BOM en CPL worden gegenereerd via een **ULP-script**, niet via de CAM processor.
-
-**Eenmalige installatie:**
-1. Download `jlcpcb_smta_exporter.ulp` van https://github.com/oxullo/jlcpcb-eagle
-2. Kopieer naar `~/Documents/EAGLE/ulps/`
-
-**BOM + CPL exporteren:**
-1. Board venster actief in Eagle 9.6.2
-2. **File → Run ULP** → selecteer `jlcpcb_smta_exporter.ulp` → OK
-3. Kies layer: **Top** (of Bottom)
-4. Kies output map — maak een aparte map `smt-files` aan
-5. Twee bestanden worden aangemaakt:
-   - `boardname_top_bom.csv`
-   - `boardname_top_cpl.csv`
-
-**BOM formaat (kolommen):**
-
-| Kolom | Inhoud |
-|---|---|
-| Comment | Waarde/type component |
-| Designator | Referenties (bijv. C1 C4 C6) |
-| Footprint | Package type |
-| LCSC Part # | LCSC onderdeelnummer (zie §9.6) |
-| Quantity | Aantal |
-
-**Tip:** Voeg LCSC onderdeelnummers toe als attribuut `LCSC_PART` aan je componenten in het schema — de ULP exporteert deze automatisch naar de BOM en JLCPCB matcht de onderdelen automatisch bij bestelling.
-
-### 9.6 Shield v2.0 — BOM componenten met LCSC nummers
-
-| Ref | Waarde | Package | LCSC | Aantal |
-|---|---|---|---|---|
-| C1, C4, C6, C7 | 0.1µF 50V X7R | C0603 | C14663 | 4 |
-| C2, C5 | 10µF 25V X5R | C0805 | C15850 | 2 |
-| R1, R2, R3 | 4.7kΩ (I2C pull-ups) | 0805 | C17673 | 3 |
-| R4 | 499Ω (UART TX) | R0402 | C4125 | 1 |
-| R5 | 33Ω (Pixels datasignaal) | R0402 | C284519 | 1 |
-| R9 | 3kΩ (Power LED serie) | 0805 | C2907263 | 1 |
-| LED1 | Blauw (Power indicator) | CHIPLED_0603 | C19171394 | 1 |
-| PTC, PTC1 | 500mA resetbare zekering | PTC-1206 | C52748003 | 2 |
-
-**Niet door JLCPCB te plaatsen (THT/connectors — zelf solderen):**
-- ESP32-C6 dev board (in pin headers)
-- Alle connectors (RJ45, JST, pin headers)
-- Spanningsregelaar U1 (knipbaar)
-
-### 9.7 Stap 4 — Rotaties controleren in JLCPCB viewer
-
-Na upload van BOM en CPL toont JLCPCB een interactieve 2D/3D preview.
-
-**Polariteitscheck per componenttype:**
-
-| Component | Gepolst? | Rotatie kritiek? | Actie |
-|---|---|---|---|
-| Keramische condensatoren (X5R, X7R) | ❌ | Nee | Geen controle nodig |
-| Weerstanden | ❌ | Nee | Geen controle nodig |
-| PTC zekeringen | ❌ | Nee | Geen controle nodig |
-| **LED1 (CHIPLED_0603)** | ✅ | **Ja** | **Controleer kathode richting!** |
-
-**LED1 polariteit (C19171394):**
-- Circuit: `VCC_5V → LED1 anode → POWER-LED net → R9 (3kΩ) → GND`
-- Pad **VCC_5V** = anode (+)
-- Pad **POWER-LED** = kathode (−)
-
-**Hoe de LED richting beoordelen in de JLCPCB 3D viewer:**
-- JLCPCB toont een **roze/magenta stip** op pin 1 van elk gepolst component — dit is de **kathode (−)** van de LED
-- De roze stip moet aan de **POWER-LED kant** staan (kant richting R9/GND), niet aan de VCC_5V kant
-- In de shield v2.0 bestelling: LED stond initieel **dwars** (90° fout) — gecorrigeerd naar horizontaal met roze stip aan POWER-LED zijde ✅
-
-**Rotatie corrigeren indien nodig:**
-1. Open `boardname_top_cpl.csv` in Excel/Numbers
-2. Zoek de designator (bijv. LED1)
-3. Pas de Rotation waarde aan met stappen van 90° (bijv. 90 → 180, of 0 → 270)
-4. Sla op en herlaad het bestand in de JLCPCB viewer
-5. Herhaal tot de roze stip aan de juiste kant staat
-
-**Na controle:** JLCPCB vraagt *"Can we proceed PCBA with corrected parts placement?"* → kies **"Yes, please proceed"** → Submit.
-
-### 9.8 Stap 5 — Upload en bestellen bij JLCPCB
-
-1. Ga naar jlcpcb.com → **Order Now**
-2. Upload de Gerber ZIP
-3. Stel PCB parameters in: 2 lagen, gewenste kleur soldermask, HASL of ENIG finish
-4. Scroll naar beneden → activeer **PCB Assembly**
-5. Kies **Top Side**, **Economic assembly**
-6. Klik Next → upload `_bom.csv` en `_cpl.csv`
-7. Controleer de component preview
-8. Bevestig onderdelen en rotaties → bestelling plaatsen
-
-### 9.9 Bekende valkuilen
-
-| Probleem | Oorzaak | Oplossing |
-|---|---|---|
-| Eagle 7.7.0 crasht bij Process Job | Bug in Eagle 7.7.0 op macOS 10.15+ | Gebruik Eagle 9.6.2 |
-| CAM file niet zichtbaar in Control Panel | Verkeerde map | Kopieer naar `~/Documents/EAGLE/cam/` |
-| "No board loaded" bij CAM Processor | CAM Processor geopend vanuit Control Panel | Open CAM Processor via icoon in het Board venster |
-| Ground plane verdwenen na opslaan | ratsnest-resultaat niet persistent | Altijd opnieuw `ratsnest` uitvoeren vóór CAM export |
-| LED verkeerd om gesoleerd | Rotatie in CPL incorrect | Controleer roze stip in JLCPCB viewer — stip = kathode (−), moet aan POWER-LED/GND kant staan. CPL aanpassen in stappen van 90°. |
-| LED staat dwars in viewer | CPL rotatie 90° fout | Pas Rotation aan met ±90° in CPL file, herlaad in viewer |
-
----
-
-## 10. Bestanden
+## 8. Bestanden
 
 | Bestand | Beschrijving |
 |---|---|
-| `ESP32_C6_Zarlar_Dashboard_17mar_wifi.ino` | Dashboard v3.0 — Matter HOME/UIT, WiFi tester |
+| `ESP32_C6_Zarlar_Dashboard_MATTER_v4_5.ino` | Dashboard v4.5 — Matrix + Matter HOME/UIT + WiFi tester |
+| `Zarlar_Matrix_Labels_v5.svg` | Transparant A4 voor matrix — kleurlaser op folie |
 | `ESP32_C6_MATTER_HVAC_v1.19.ino` | HVAC productieversie — huidig |
 | `HVAC_GoogleScript_v4.gs` | GAS HVAC — 31 kolommen A–AE |
 | `ESP32_C6_MATTER_ECO_v1.22.ino` | ECO productieversie — huidig |
@@ -1234,7 +965,7 @@ Na upload van BOM en CPL toont JLCPCB een interactieve 2D/3D preview.
 
 ---
 
-## 11. Instructies voor nieuwe sessie
+## 9. Instructies voor nieuwe sessie
 
 1. **Upload** de actuele sketch als bijlage + dit document
 2. **Vraag Claude** het document te lezen en samen te vatten vóór hij iets aanpast
@@ -1253,4 +984,4 @@ Na upload van BOM en CPL toont JLCPCB een interactieve 2D/3D preview.
 
 ---
 
-*Zarlar project — Filip Delannoy — bijgewerkt 23 maart 2026*
+*Zarlar project — Filip Delannoy — bijgewerkt 26 maart 2026*
