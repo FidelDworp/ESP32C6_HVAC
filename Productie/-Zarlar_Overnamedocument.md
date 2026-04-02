@@ -1,6 +1,6 @@
 # Zarlar Thuisautomatisering — Master Overnamedocument
 **ESP32-C6 · Arduino IDE · Matter · Google Sheets**
-*Filip Delannoy — Zarlardinge (BE) — bijgewerkt 26 maart 2026*
+*Filip Delannoy — Zarlardinge (BE) — bijgewerkt 1 april 2026*
 
 ---
 
@@ -28,12 +28,36 @@ Een volledig zelfgebouwd thuisautomatiseringssysteem op basis van drie ESP32-C6 
 | Controller | Naam | IP | MAC | Board | Versie | Status |
 |---|---|---|---|---|---|---|
 | **HVAC** | ESP32_HVAC.local | 192.168.0.70 | 58:8C:81:32:2B:90 | 32-pin clone (experimenteerbord) | v1.19 | ✅ Productie, stabiel |
-| **ECO Boiler** | ESP32_ECO Boiler | 192.168.0.71 | 58:8C:81:32:2B:D4 | 32-pin clone (blote controller) | v1.22 | ✅ Productie, stabiel |
+| **ECO Boiler** | ESP32_ECO Boiler | 192.168.0.71 | 58:8C:81:32:2B:D4 | 32-pin clone (blote controller) | v1.23 | ✅ Productie, stabiel |
 | **ROOM / Eetplaats** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:2F:48 | 32-pin clone | v2.10 | ✅ Matter + heap stabiel |
-| **Testroom** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:29:54 | 32-pin clone (experimenteerbord, kromme pinnetjes) | v2.10 | 🔄 Zelfde IP als EETPL |
-| **Zarlar Dashboard** | ESP32_ZARLAR.local | 192.168.0.60 | A8:42:E3:4B:FA:BC | 30-pin clone (blote controller) | v3.0 | ✅ Matter HOME/UIT, WiFi tester |
+| **Testroom** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:29:54 | 32-pin clone (experimenteerbord, kromme pinnetjes) | v2.10 | 🔄 Zelfde IP als EETPL — actief als R-EETPL (ctrl idx 11) |
+| **Zarlar Dashboard** | ESP32_ZARLAR.local | 192.168.0.60 | A8:42:E3:4B:FA:BC | 30-pin clone (blote controller) | **v5.0** | ✅ Matter + Matrix 16×16 |
 
 ⚠️ **MAC-wissel HVAC:** het experimenteerbord (MAC `58:8C:81:32:29:54`) is eerder ook als HVAC-controller gebruikt. De huidige productie-HVAC draait op `58:8C:81:32:2B:90`. Bij twijfel: check het MAC-adres in de serial output bij boot.
+
+### 1.3 Particle Photon controllers — transitiefase
+
+Tijdens de migratie van Particle Photon naar ESP32 draaien de Photon-controllers nog in productie. Het Dashboard pollt hun data via een **Cloudflare Worker** die de Particle Cloud API afschermt. De matrix toont automatisch Photon-data als fallback zolang de ESP32-versie nog niet actief is.
+
+| Photon | Naam | Device ID (kort) | Status | Equivalent ESP32 |
+|--------|------|-----------------|--------|-----------------|
+| P-BandB | R1-BandB | 30002c... | ⚫ Offline | R-BandB (idx 6) |
+| P-Badkamer | R2-BADK | 560042... | ✅ Online | R-BADK (idx 7) |
+| P-Inkom | R3-INKOM | 420035... | ✅ Online | R-INKOM (idx 8) |
+| P-Keuken | R4-KEUK | 310017... | ✅ Online | R-KEUKEN (idx 9) |
+| P-Waspl | R5-WASPL | 33004f... | ✅ Online | R-WASPL (idx 10) |
+| P-Eetpl | R6-EETPL | 210042... | ✅ Online | R-EETPL (idx 11) ← **ESP32 actief** |
+| P-Zitpl | R7-ZITPL | 410038... | ✅ Online | R-ZITPL (idx 12) |
+
+**Cloudflare Worker:** `https://controllers-diagnose.filip-delannoy.workers.dev`
+
+| Endpoint | Gebruik |
+|----------|---------|
+| `/` | Status + last_seen alle Photon devices |
+| `/sensor?id={deviceId}` | Volledige sensordata van één Photon via Particle Cloud |
+| `/token` | Particle access token (legacy, wordt niet meer gebruikt) |
+
+⚠️ **Particle token** zit veilig in de Worker — niet in de browser en niet in de ESP32 sketch.
 
 **Geplande controllers** (sketches nog niet geflasht):
 
@@ -377,6 +401,18 @@ Crash-info tonen in `/settings`: laatste reden + teller + resetknop.
 - RSSI-waarden zijn negatief → in JavaScript is `c.r` falsy als `r === 0` maar truthy als `r === -62`. Gebruik `c.r !== 0` als conditie, niet `c.r`
 - `Math.abs(c.r)` voor weergave — minteken weglaten vermijdt layout-problemen
 - `font-size` < 11px wordt onderdrukt door iOS Safari — gebruik minimum 11px. Voeg `-webkit-text-size-adjust:none` toe aan body
+
+### 2.13 Statusmatrix — lessen en valkuilen
+
+- **WS2812B 5V voeding apart:** bij volle helderheid kan een 16×16 matrix >3A trekken. Nooit via shield PTC (max 500 mA). Aparte 5V rail verplicht.
+- **Serpentine adressering:** `matPxIdx()` converteert logische (rij, kolom) naar fysiek pixel-adres. Bij incorrecte richting: `#define MATRIX_FLIP_H true`. Testen via `matrix-test` Serial commando.
+- **NeoPixel buffer heap:** 256 pixels × 3 bytes = 768 bytes permanent in heap. Klein maar tel mee bij heap-budgettering.
+- **Largest free block is de echte metric**, niet total free heap. Matrix + Matter: largest block daalt naar ~32–36KB. Crashdrempel blijft 25KB.
+- **MROW-volgorde moet exact overeenkomen met de SVG labelsheet.** Een off-by-one verschuiving zorgt ervoor dat alle data op de verkeerde rij staat. Verificatie via `status` Serial commando na flash.
+- **`sed -i` op `*/`:** een globale sed-vervanging van `*/` naar `* /` corrupteert de afsluitende `*/` van het versieheader-blokcommentaar → compilatiefout "unterminated comment". Nooit globaal `*/` vervangen.
+- **Photon data via Cloudflare Worker:** de ESP32 kan niet rechtstreeks de Particle Cloud aanroepen (HTTPS heap-druk, token-beheer). Een Worker als proxy is de elegante oplossing: token veilig in de Worker, ESP32 roept gewone HTTPS GET aan.
+- **Automatische fallback-logica:** gebruik `MatrixRowDef { esp_idx, photon_idx, sys_idx }` per rij. `updateMatrix()` kiest dynamisch ESP32 → Photon → zwart. Geen reflash nodig bij transitie.
+- **Controller-index verificatie:** de controller-indices in MROW zijn niet hardcoded op volgorde in de sketch maar afhankelijk van de dashboard `/settings` configuratie. Altijd verifiëren via `status` commando na flash — nooit aannemen.
 
 ---
 
@@ -933,6 +969,74 @@ Bij elke herstart doorloopt de matrix een korte animatie:
 
 Serial commando's: `matrix-test`, `matrix-update`
 
+#### Kolom-indeling ROOM via Photon fallback (rijen 5–11, tijdelijk)
+
+Zolang een ESP32-controller nog niet actief is, toont de matrix Photon-data via `renderPhotonRow()`. De Photon-keys verschillen van de ESP32 ROOM-keys:
+
+| Col | Photon key | Label | Zelfde logica als ROOM |
+|-----|-----------|-------|----------------------|
+| 0 | — | Status | groen=online, rood=offline |
+| 1 | — | zwart | HOME niet beschikbaar op Photon |
+| 2 | `l` | TSTATon | Rood=verwarming aan |
+| 3 | `g` | Temp DHT22 | tempPx() |
+| 4 | `d` | Humi % | vochtlogica |
+| 5 | `a` | CO2 ppm | CO2 kleurschaal |
+| 6 | `i` | MOV1 | warm wit=beweging |
+| 7 | `j` | MOV2 | warm wit=beweging |
+| 8 | — | zwart | niet beschikbaar |
+| 9 | `k` | DewAlert | rood/dim blauw |
+| 10 | `s`/`t`/`u` | RGB pixels | werkelijke kleur (geschaald) |
+| 11 | `q` | Night | geel=dag, purper=nacht |
+| 12 | `e` | LDR licht 0–100 | geel omgekeerd |
+| 13 | — | zwart | pixel_on_str niet beschikbaar |
+| 14 | `x` | FreeMem% | groen/geel/rood |
+| 15 | — | zwart | RSSI niet in worker response |
+
+#### Automatische ESP32/Photon fallback (v5.0+)
+
+De matrix kiest per rij automatisch welke controller te tonen:
+
+```
+1. ESP32-controller actief + json aanwezig  → renderRoomRow()   (definitief)
+2. ESP32 inactief of geen data              → renderPhotonRow() (tijdelijk)
+3. Geen enkele controller beschikbaar       → zwart
+```
+
+Dit wordt bestuurd via de `MatrixRowDef` struct in de sketch:
+
+```cpp
+struct MatrixRowDef {
+  int esp_idx;     // ESP32 R-controller idx (-1 = geen)
+  int photon_idx;  // Photon P-controller idx (-1 = geen)
+  int sys_idx;     // Systeem-controller (-1 = geen, -2 = separator)
+};
+```
+
+**Transitie-workflow:** zodra een nieuwe ESP32-controller klaar is, activeer hem in `/settings` → de matrix schakelt automatisch om van Photon naar ESP32. **Geen reflash nodig.**
+
+**Diagnostiek:** typ `status` in Serial Monitor na een poll-cyclus. Output per rij:
+```
+rij  6 → Photon idx 15 (P-Badkamer) ✓ fallback [ESP32 R-BADK inactief]
+rij 10 → ESP32  idx 11 (R-EETPL)    ✓ actief
+```
+
+#### Huidige MROW-mapping (v5.0, stemt overeen met SVG labelsheet)
+
+| Matrix rij | SVG label | ESP32 idx | Photon idx | Actief als |
+|-----------|----------|-----------|-----------|-----------|
+| 0 | S-HVAC | — | — | sys 0 |
+| 1 | S-ECO | — | — | sys 1 |
+| 2–3 | S-OUTSIDE/ACCESS | — | — | gereserveerd |
+| 4 | separator | — | — | — |
+| 5 | R-BandB | 6 | 14 | Photon offline → zwart |
+| 6 | R-BADK | 7 | 15 | Photon P-Badkamer |
+| 7 | R-INKOM | 8 | 16 | Photon P-Inkom |
+| 8 | R-KEUKEN | 9 | 17 | Photon P-Keuken |
+| 9 | R-WASPL | 10 | 18 | Photon P-Waspl |
+| 10 | R-EETPL | 11 | 19 | **ESP32 actief** |
+| 11 | R-ZITPL | 12 | 20 | leeg (P-Zitpl inactief) |
+| 12–15 | leeg | — | — | — |
+
 ### 6.9 Openstaande punten Dashboard
 
 - **OTA testen** — nog niet gedaan op Dashboard
@@ -951,11 +1055,12 @@ Elke ROOM controller meet lokaal de luchtvochtigheid. Bij overschrijding van een
 
 | Bestand | Beschrijving |
 |---|---|
-| `ESP32_C6_Zarlar_Dashboard_MATTER_v4_5.ino` | Dashboard v4.5 — Matrix + Matter HOME/UIT + WiFi tester |
-| `Zarlar_Matrix_Labels_v5.svg` | Transparant A4 voor matrix — kleurlaser op folie |
+| `ESP32_C6_Zarlar_Dashboard_MATTER_v5_0.ino` | Dashboard v5.0 — Matrix + Photon fallback + Matter HOME/UIT |
+| `Zarlar_Matrix_Labels_v5.svg` | Transparant A4 voor matrix — kleurlaser, houtfoto als achtergrond in Inkscape |
+| `worker-status.js` | Cloudflare Worker v2.0 — `/sensor` endpoint voor Photon data |
 | `ESP32_C6_MATTER_HVAC_v1.19.ino` | HVAC productieversie — huidig |
 | `HVAC_GoogleScript_v4.gs` | GAS HVAC — 31 kolommen A–AE |
-| `ESP32_C6_MATTER_ECO_v1.22.ino` | ECO productieversie — huidig |
+| `ESP32_C6_MATTER_ECO_v1.23.ino` | ECO productieversie — huidig |
 | `ECO_GoogleScript.gs` | GAS ECO — 20 kolommen A–T |
 | `ESP32-C6_MATTER_ROOM_15mar_2200.ino` | ROOM v2.10 — Matter + heap stabiel |
 | `ROOM_GoogleScript_v1_4.gs` | GAS ROOM — 37 kolommen A–AK |
@@ -984,4 +1089,4 @@ Elke ROOM controller meet lokaal de luchtvochtigheid. Bij overschrijding van een
 
 ---
 
-*Zarlar project — Filip Delannoy — bijgewerkt 26 maart 2026*
+*Zarlar project — Filip Delannoy — bijgewerkt 1 april 2026*
