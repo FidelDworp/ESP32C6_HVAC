@@ -1,6 +1,6 @@
 # Zarlar Thuisautomatisering — Master Overnamedocument
 **ESP32-C6 · Arduino IDE · Matter · Google Sheets**
-*Filip Delannoy — Zarlardinge (BE) — bijgewerkt 1 april 2026*
+*Filip Delannoy — Zarlardinge (BE) — bijgewerkt 12 april 2026*
 
 ---
 
@@ -29,8 +29,8 @@ Een volledig zelfgebouwd thuisautomatiseringssysteem op basis van drie ESP32-C6 
 |---|---|---|---|---|---|---|
 | **HVAC** | ESP32_HVAC.local | 192.168.0.70 | 58:8C:81:32:2B:90 | 32-pin clone (experimenteerbord) | v1.19 | ✅ Productie, stabiel |
 | **ECO Boiler** | ESP32_ECO Boiler | 192.168.0.71 | 58:8C:81:32:2B:D4 | 32-pin clone (blote controller) | v1.23 | ✅ Productie, stabiel |
-| **ROOM / Eetplaats** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:2F:48 | 32-pin clone | v2.10 | ✅ Matter + heap stabiel |
-| **Testroom** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:29:54 | 32-pin clone (experimenteerbord, kromme pinnetjes) | v2.10 | 🔄 Zelfde IP als EETPL — actief als R-EETPL (ctrl idx 11) |
+| **ROOM / Eetplaats** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:2F:48 | 32-pin clone | **v2.19** | ✅ Matter + heap stabiel |
+| **Testroom** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:29:54 | 32-pin clone (experimenteerbord, kromme pinnetjes) | v2.19 | 🔄 Zelfde IP als EETPL — actief als R-EETPL (ctrl idx 11) |
 | **Zarlar Dashboard** | ESP32_ZARLAR.local | 192.168.0.60 | A8:42:E3:4B:FA:BC | 30-pin clone (blote controller) | **v5.0** | ✅ Matter + Matrix 16×16 |
 
 ⚠️ **MAC-wissel HVAC:** het experimenteerbord (MAC `58:8C:81:32:29:54`) is eerder ook als HVAC-controller gebruikt. De huidige productie-HVAC draait op `58:8C:81:32:2B:90`. Bij twijfel: check het MAC-adres in de serial output bij boot.
@@ -72,7 +72,7 @@ Tijdens de migratie van Particle Photon naar ESP32 draaien de Photon-controllers
 | 12 | R-ZITPL | 192.168.0.81 | 58:8C:81:32:2D:14 | Room |
 | 13 | S-ACCESS | 192.168.0.82 | 58:8C:81:32:26:9C | Buitenverlichting/toegang |
 
-### 1.3 Partitietabel (identiek voor ALLE vier controllers)
+### 1.4 Partitietabel (identiek voor ALLE vier controllers)
 
 Bestand: `partitions_16mb.csv` — plaatsen naast het `.ino` bestand in de schetsmap.
 
@@ -178,9 +178,7 @@ Gedetailleerde pinout per controller staat in §3.1 (HVAC), §4.1 (ECO), §5.1 (
 
 #### Dashboard (192.168.0.60)
 
-Momenteel geen IO-pinnen in gebruik buiten WiFi en USB. Het board wordt enkel gebruikt als netwerk-aggregator en Matter-endpoint.
-
-**Toekomstig idee:** een NeoPixel-matrix toevoegen aan het Dashboard om de status van alle controllers visueel weer te geven (kleur per controller = online/offline/alarm, of een live heatmap van de verwarmingskringen). Dit past goed bij de centrale rol van het Dashboard en maakt de systeemstatus zichtbaar zonder een scherm of app. Te documenteren in §6 zodra dit uitgewerkt wordt.
+IO4 → NeoPixel data van 16×16 matrix. Overige IO-pinnen niet in gebruik.
 
 ### 1.7 Shield — connectoroverzicht
 
@@ -202,7 +200,7 @@ Overzicht van alle aansluitingen die het Zarlar-shield moet voorzien per control
 
 | Connector | Voedings-pin | Signaal-niveau | Opmerking |
 |---|---|---|---|
-| Roomsense | 5V (VIN) + 3V3 | 3.3V | HC-SR501 PIR draait op 3.3V — beweging = LOW. DHT22 op 3.3V met pull-up. |
+| Roomsense | 5V (VIN) + 3V3 | 3.3V | **AM312 PIR** draait op 3.3V — beweging = HIGH (push-pull, geen pull-up nodig). DHT22 op 3.3V met pull-up. |
 | OPTION | 5V (VIN) + 3V3 | 3.3V | MH-Z19 CO2 heeft **5V voedingspin** nodig; PWM-signaal is 3.3V. |
 | T-BUS | 3V3 | 3.3V | DS18B20 werkt op 3.3V met 4.7k pull-up naar 3.3V. |
 | Pixel-line | **5V (VIN)** | 3.3V | NeoPixels (WS2812) vereisen 5V voeding; 3.3V data-signaal werkt. |
@@ -211,11 +209,7 @@ Overzicht van alle aansluitingen die het Zarlar-shield moet voorzien per control
 | Relay OUT | — | 3.3V drive | IO1 actief-laag: LOW = relais AAN. Vrijloop-diode op relay coil! |
 | PWM OUT | — | 3.3V | `ledcAttach()` — 1 kHz, 8-bit (0–255). Externe driver nodig voor motor. |
 
-#### Toekomstige uitbreiding Dashboard
-
-Het Dashboard-shield heeft momenteel geen IO-aansluitingen. Een **NeoPixel-matrix** is voorzien als toekomstige toevoeging: visuele statusweergave van alle controllers (kleur per controller = online/offline/alarm, of heatmap verwarmingskringen). Hiervoor is een Pixel-line aansluiting (5V + GND + data IO4) te voorzien op het Dashboard-shield.
-
-
+### 1.8 Arduino IDE instellingen
 
 | Instelling | Waarde |
 |---|---|
@@ -340,9 +334,7 @@ In de HVAC sketch staat `mcp.digitalWrite(idx, on_off ? LOW : HIGH)` op drie afz
 | `onChangeOnOff` Matter callback | Bediening via Apple Home / HomeKit | v1.19 |
 | `/circuit_override_cancel` handler | Override annuleren via webUI | v1.14 |
 
-Dit is **bewuste duplicatie** — niet refactoren naar een centrale `applyRelay()` functie tenzij er een vierde pad bijkomt. Elk pad is onafhankelijk leesbaar. In embedded code is dat een voordeel: bij een probleem weet je exact waar te kijken zonder andere functies op te zoeken.
-
-⚠️ **Valkuil vóór v1.19:** de Matter `onChangeOnOff` callback zette enkel de override-vlag maar deed **geen** `mcp.digitalWrite()`. Gevolg: relais reageerden pas na de volgende `pollRooms()` cyclus (~10-60s vertraging) bij bediening vanuit Apple Home. Via de webUI werkte het al onmiddellijk. Fix: `circuits[i].heating_on = on_off` + `mcp.digitalWrite()` toegevoegd in de callback.
+Dit is **bewuste duplicatie** — niet refactoren naar een centrale `applyRelay()` functie tenzij er een vierde pad bijkomt.
 
 ### 2.7 JSON key synchronisatie — kritiek leermoment
 
@@ -364,6 +356,18 @@ if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < 25000) {
 }
 ```
 Crash-info tonen in `/settings`: laatste reden + teller + resetknop.
+
+⚠️ **NVS crashlog feedback loop (geleerd 12 april 2026):** de crashlog schrijft elke 60s naar NVS zolang heap_block < 25 KB. Elke `begin()/end()` alloceert tijdelijk een NVS-buffer — dat maakt de toch al krappe heap nog krapper. Fix: schrijf crashlog **maximaal één keer per low-heap episode** via een vlag:
+```cpp
+static bool crash_logged_this_episode = false;
+if (lb < 25000 && !crash_logged_this_episode) {
+    crash_logged_this_episode = true;
+    // ... crashPrefs.begin() etc.
+} else if (lb >= 25000) {
+    crash_logged_this_episode = false;
+}
+```
+**Nog niet geïmplementeerd in v2.19 — openstaand punt.**
 
 ### 2.9 Serial commando's (alle vier sketches)
 
@@ -413,6 +417,32 @@ Crash-info tonen in `/settings`: laatste reden + teller + resetknop.
 - **Photon data via Cloudflare Worker:** de ESP32 kan niet rechtstreeks de Particle Cloud aanroepen (HTTPS heap-druk, token-beheer). Een Worker als proxy is de elegante oplossing: token veilig in de Worker, ESP32 roept gewone HTTPS GET aan.
 - **Automatische fallback-logica:** gebruik `MatrixRowDef { esp_idx, photon_idx, sys_idx }` per rij. `updateMatrix()` kiest dynamisch ESP32 → Photon → zwart. Geen reflash nodig bij transitie.
 - **Controller-index verificatie:** de controller-indices in MROW zijn niet hardcoded op volgorde in de sketch maar afhankelijk van de dashboard `/settings` configuratie. Altijd verifiëren via `status` commando na flash — nooit aannemen.
+
+### 2.14 WebUI JavaScript — lessen (geleerd 12 april 2026)
+
+- **Nooit de volledige JS-block in één `str_replace` vervangen.** Één fout in quote-escaping breekt het complete script onzichtbaar — alle functies stoppen. Gebruik altijd kleine, chirurgische ingrepen op specifieke regels.
+- **`DOMContentLoaded` betrouwbaarder dan `window.addEventListener('load')`** voor inline scripts in gestreamde HTML-pagina's. Bij pagina's zonder externe resources kan `load` al gevuurd zijn vóór het inline script volledig geparsed is → `setInterval` wordt nooit geregistreerd → auto-refresh stopt. Gebruik:
+  ```js
+  document.addEventListener('DOMContentLoaded', function() {
+    updateValues();
+    setInterval(updateValues, 3000);
+    setInterval(updateClock, 1000);
+  });
+  ```
+- **Klok onafhankelijk van JSON-fetch:** gebruik een aparte `updateClock()` met `setInterval(updateClock, 1000)` die enkel de browsertijd toont. Sla de uptime op als globale `lastUptime` en update die in de fetch-callback. Zo tikt de klok door ook als de JSON-fetch tijdelijk faalt.
+- **Slider DOM-waarde uitlezen voor value-cel update** (geen JSON-key nodig):
+  ```js
+  else if(lbl.includes('Dim snelheid')){
+    var sl=document.querySelector('input[name=duration]');
+    if(sl) td.textContent=sl.value+' s';
+  }
+  ```
+  Werkt altijd synchroon na `submitAjax`.
+- **PIR triggers direct herberekenen na `pushEvent()`**, niet wachten op de 60s-gate:
+  ```cpp
+  pushEvent(mov1Times, MOV_BUF_SIZE);
+  mov1_triggers = countRecent(mov1Times, MOV_BUF_SIZE);  // onmiddellijk!
+  ```
 
 ---
 
@@ -485,8 +515,6 @@ Runtime: largest_block stabiel >35KB  ✅
 
 ### 3.6 HVAC /json output (keys a..ae → naar Zarlar → Google Sheets)
 
-Geverifieerd op 26 maart 2026 via upload `ESP32_C6_MATTER_HVAC_v1_19.ino`.
-
 | Key | Sheet | Label | Eenheid | Opmerking |
 |-----|-------|-------|---------|-----------|
 | `a` | B | uptime_sec | s | |
@@ -526,7 +554,7 @@ Geverifieerd op 26 maart 2026 via upload `ESP32_C6_MATTER_HVAC_v1_19.ino`.
 ### 3.7 Openstaande punten HVAC
 
 - **kWh-berekening**: echte `Q = m × Cp × ΔT / 3600` per pompbeurt implementeren
-- **HTML compressie**: zelfde aanpak als ROOM v3.1 — witte pagina op iPhone bij ventilatieslider wijst op heap-krapte bij page reload
+- **HTML compressie**: zelfde aanpak als ROOM — witte pagina op iPhone bij ventilatieslider wijst op heap-krapte bij page reload
 
 ---
 
@@ -588,10 +616,23 @@ Geverifieerd op 26 maart 2026 via upload `ESP32_C6_MATTER_HVAC_v1_19.ino`.
 | Board | ESP32-C6 32-pin clone (MAC `58:8C:81:32:2F:48` productie / `58:8C:81:32:29:54` experimenteerbord) |
 | Voeding | Test: 5V USB-C / Productie: 5V via VIN (Zarlar shield, PTC 500 mA) |
 | Static IP | 192.168.0.80 |
-| Sensoren | DHT22 (temp+vocht), DS18B20 (OneWire), MH-Z19 (CO2), Sharp GP2Y (dust), TSL2561 (lux), LDR, PT1000 |
-| Actuatoren | NeoPixel strip (tot 30 pixels), PIR×2, laserbeam LDR |
+| Sensoren | DHT22 (temp+vocht), DS18B20 (OneWire), MH-Z19 (CO2), Sharp GP2Y (dust), TSL2561 (lux), LDR |
+| PIR sensoren | **AM312** (natively 3.3V, push-pull active HIGH — vervangen HC-SR501) |
+| Actuatoren | NeoPixel strip (tot 30 pixels), laserbeam LDR |
 | Verwarming | TSTAT output + setpoint |
-| Shield | PhotoniX-compatible Roomsense connector (RJ45) |
+| Shield | Nieuwe ESP32C6 shields aangekomen van JLCPCB (12 april 2026) — vervanging Photon shields |
+
+#### PIR sensors — AM312 (v2.19+)
+
+De HC-SR501 PIR sensors (gemodificeerd voor 3.3V) zijn onbruikbaar gebleken door BISS0001 gain-degradatie bij lagere voedingsspanning. Vervangen door **AM312 modules**:
+
+| Eigenschap | HC-SR501 (oud) | AM312 (nieuw) |
+|---|---|---|
+| Voedingsspanning | 5V (gemodificeerd naar 3.3V → kapot) | **3.3V natively** |
+| Output | Active LOW (INPUT_PULLUP vereist) | **Active HIGH, push-pull (geen pull-up nodig)** |
+| Sketch logica | `== LOW` + `INPUT_PULLUP` | `== HIGH`, geen `INPUT_PULLUP` |
+
+⚠️ **Sketch aanpassing bij overgang naar AM312:** `INPUT_PULLUP` → `INPUT`, `!= LOW` → `!= HIGH` (of omgekeerde logica). In v2.19 wordt de bestaande `!p1 && last1` (falling edge) aanpak gebruikt — dit vereist dat `INPUT_PULLUP` nog aanwezig is voor de AM312. Controleer bij ingebruikname of de logica overeenkomt.
 
 #### Pinout ROOM (Photon → ESP32-C6 conversie)
 
@@ -601,7 +642,7 @@ Geverifieerd op 26 maart 2026 via upload `ESP32_C6_MATTER_HVAC_v1_19.ino`.
 | IO2 | `OPTION_LDR 2` | A7 | LDR2 analog (beam/MOV2) | 0–3.3V, geschaald 0–100 |
 | IO3 | `ONE_WIRE_PIN 3` | D3 | DS18B20 OneWire | 3.3V pull-up |
 | IO4 | `NEOPIXEL_PIN 4` | D4 | NeoPixels data | NEO_GRB + NEO_KHZ800 |
-| IO5 | `PIR_MOV1 5` | D5 | MOV1 PIR | INPUT_PULLUP — beweging = LOW |
+| IO5 | `PIR_MOV1 5` | D5 | MOV1 PIR (AM312) | INPUT_PULLUP — zie noot AM312 hierboven |
 | IO6 | `DHT_PIN 6` | D6 | DHT22 data | 3.3V pull-up |
 | IO7 | `SHARP_ANALOG 7` | A2 | Sharp dust analog (RX) | Voltage divider indien >3.3V |
 | IO10 | `TSTAT_PIN 10` | A6 | TSTAT switch (GND = AAN) | INPUT_PULLUP |
@@ -609,11 +650,11 @@ Geverifieerd op 26 maart 2026 via upload `ESP32_C6_MATTER_HVAC_v1_19.ino`.
 | IO12 | `SHARP_LED 12` | D7 | Sharp dust LED (TX) | OUTPUT, HIGH = uit |
 | IO13 | — | D0 | I2C SDA → TSL2561 | 4.7k pull-up naar 5V |
 | IO18 | `CO2_PWM 18` | A4 | CO2 PWM input (MH-Z19) | ⚠️ MH-Z19 heeft 5V voedingspin nodig! |
-| IO19 | `PIR_MOV2 19` | A5 | MOV2 PIR | INPUT_PULLUP — beweging = LOW |
+| IO19 | `PIR_MOV2 19` | A5 | MOV2 PIR (AM312) | INPUT_PULLUP — zie noot AM312 hierboven |
 
 ⚠️ **IO1 heeft een 10k pull-up naar 3V3** op de Roomsense-shield — beïnvloedt analoge meting van LDR1.
 
-⚠️ **MH-Z19 CO2-sensor** heeft aparte 5V voedingspin — PWM-signaal zelf is 3.3V compatibel.
+⚠️ **MH-Z19 CO2-sensor** heeft aparte 5V voedingspin — PWM-signaal zelf is 3.3V compatibel. Op de oude Photon-shield is de voedingsspanning slechts 4.3–4.4V → sensor leest niet. De `pulseIn()` call blokkeert dan toch nog tot 400ms per 60s cyclus (beide calls lopen volledig op timeout).
 
 ### 5.2 Libraries (ROOM)
 
@@ -638,7 +679,7 @@ Geverifieerd op 26 maart 2026 via upload `ESP32_C6_MATTER_HVAC_v1_19.ino`.
 | `SENSOR_RSSI_CRIT` | −85 dBm | Kritiek signaal (rood) |
 | `SENSOR_LUX_MAX` | 65000 lux | ≥ 65535 = I2C garbage (TSL2561) |
 
-### 5.4 Heap-baseline (v2.10)
+### 5.4 Heap-baseline (v2.10, ongewijzigd in v2.19)
 
 ```
 Setup:   23% free  (62936 bytes)   Largest block: 45 KB
@@ -660,7 +701,7 @@ Matter kost ~214 KB heap — niet te vermijden. Alle andere optimalisaties zijn 
 | N pixel-handlers → 2 universele handlers (`?idx=`) | ~600 bytes handler-heap |
 | `mdns_name` en `hsvToRgb()` verwijderd | Flash + BSS |
 
-### 5.6 Matter endpoints (v2.10, werkend)
+### 5.6 Matter endpoints (v2.19, werkend)
 
 | # | Type | Variabele | Opmerking |
 |---|---|---|---|
@@ -676,7 +717,7 @@ Matter kost ~214 KB heap — niet te vermijden. Alle andere optimalisaties zijn 
 ### 5.7 Matter — ROOM-specifieke valkuilen
 
 **"Aparte tegels" in Apple Home — hypothese endpoint-volgorde:**
-In de werkende v2.1 (3 maart 2026) stond de thermostat op positie 7 ná 6 sensor-endpoints → Apple Home bood splitsen aan. In v2.10 staat de thermostat op EP1 → geen splitsen.
+In de werkende v2.1 (3 maart 2026) stond de thermostat op positie 7 ná 6 sensor-endpoints → Apple Home bood splitsen aan. In v2.10+ staat de thermostat op EP1 → geen splitsen.
 
 Te proberen volgende sessie:
 ```
@@ -708,6 +749,8 @@ Let op: Matter reset + herpairing vereist bij endpoint-volgorde wijziging.
 
 ### 5.9 ROOM /json output (keys a..ai → naar Zarlar → Google Sheets)
 
+JSON ongewijzigd t.o.v. v2.10. Geen nieuwe keys toegevoegd in v2.12–v2.19.
+
 | Key | Sheet | Label | Eenheid |
 |-----|-------|-------|---------|
 | `a` | B | uptime_sec | s |
@@ -730,8 +773,8 @@ Let op: Matter reset + herpairing vereist bij endpoint-volgorde wijziging.
 | `t` | V | Pixel_on_str | tekst |
 | `u` | W | Pixel_mode_str | tekst |
 | `v` | X | Home switch | 0/1 |
-| `w`..`x` | Y..Z | MOV1/MOV2 /min | /min |
-| `y`..`z` | AA..AB | MOV1/MOV2 light | 0/1 |
+| `w`..`x` | Y..Z | MOV1/MOV2 triggers/min | /min |
+| `y`..`z` | AA..AB | MOV1/MOV2 lamp aan | 0/1 |
 | `aa` | AC | BEAMvalue | 0–100 |
 | `ab` | AD | BEAMalert | 0/1 |
 | `ac` | AE | RSSI | dBm |
@@ -742,12 +785,108 @@ Let op: Matter reset + herpairing vereist bij endpoint-volgorde wijziging.
 | `ah` | AJ | Tds2 | °C |
 | `ai` | AK | Tds3 | °C |
 
-### 5.10 Openstaande punten ROOM
+**Dashboard matrix ROOM-kolom 6/7:** gebruikt `y`/`z` (lamp aan) voor MOV-pixels. Voor bewegingsdetectie ongeacht licht → gebruik `w`/`x` (triggers/min > 0). **Matrix-update nog te doen** (zie §5.11).
 
-**Prioriteit 1 — Aparte tegels:**
+### 5.10 Versiehistorie ROOM (recente wijzigingen)
+
+| Versie | Datum | Wijziging |
+|---|---|---|
+| v2.19 | 12 apr 2026 | Dim snelheid + Licht tijd: JS handler leest slider DOM-waarde; format "N s" / "N min" |
+| v2.18 | 12 apr 2026 | MOV triggers direct herberekend bij PIR-event via `countRecent()` na `pushEvent()` |
+| v2.17 | 12 apr 2026 | JSON terug naar origineel (680 bytes, geen nieuwe keys) — v2.13/14/15/16 NG |
+| v2.16 | 12 apr 2026 | Heropbouw: timer fix (DOMContentLoaded + updateClock), alle features v2.13–v2.14 correct |
+| v2.15 | 12 apr 2026 | NG — niet geflasht |
+| v2.14 | 12 apr 2026 | NG — JS grote block vervanging brak submitAjax en setInterval |
+| v2.13 | 12 apr 2026 | NG — JS grote block vervanging brak slider-save en heating-logica |
+| v2.12 | 12 apr 2026 | UI: binaire waarden → gekleurde .dot cirkels; MOV AUTO-kleur bug fix (hardcoded groen → neo_r/g/b) |
+| v2.11 | 16 mrt 2026 | `/set_home` endpoint voor Dashboard HOME/UIT broadcast |
+| v2.10 | 15 mrt 2026 | Matter fixes + heap-optimalisatie (String → char[]), stabiele baseline |
+
+### 5.11 ROOM UI — nieuwe features (v2.12–v2.19)
+
+#### Dot-cirkels in statuspagina
+
+Binaire waarden worden getoond als gekleurde cirkels (`.dot` CSS class):
+
+| Label | Kleur true | JSON key | Opmerking |
+|---|---|---|---|
+| Dauwpunt alarm | 🔴 `#c00` | `j` | |
+| Verwarming AUTO | 🟢 teal `#1a9e6e` | server-render only | Geen live JS-update (geen JSON-key) |
+| Verwarming aan | 🟠 `#e05c00` | `b` | |
+| Ventilatie AUTO | 🔵 `#3aafe0` | server-render only | Geen live JS-update (geen JSON-key) |
+| Hardware thermostaat | 🟢 `#2a9d2a` | `d` | |
+| Thuis | 🟢 `#2a9d2a` | `v` | |
+| MOV1 | 🔴 `#c00` | `w > 0` | Beweging gedetecteerd, ongeacht licht |
+| MOV2 | 🔴 `#c00` | `x > 0` | Beweging gedetecteerd, ongeacht licht |
+| Pixel 0..N | ⬤ neo-kleur | `y`/`z`/`t` | Werkelijke neopixel RGB |
+| Bed modus | 🟣 `#7b2fbe` | `p` | |
+| Beam alert | 🔴 `#c00` | `ab` | |
+
+⚠️ "Verwarming AUTO" en "Ventilatie AUTO" hebben geen JSON-key. De dot is correct bij paginalading (server-render), maar updatet niet live na togglen. Na toggle is de schakelaar zelf de zichtbare indicator.
+
+#### Licht-aan tijd slider (`light_on_min`)
+
+```cpp
+// NVS key: "light_on_min"  (int, 0–30, default 0)
+// Berekening:
+inline unsigned long lightOnDuration() {
+  return (unsigned long)light_on_min * 60000UL + 5000UL;
+}
+// Slider = 0 → 5s, Slider = 5 → 5 min + 5s, enz.
+```
+
+- Persistent in NVS, overleeft Matter nuclear reset
+- Endpoint: `/set_light_on_min?mins=N`
+- Positie in UI: direct onder MOV2, vóór NeoPixel kleurkiezer
+- Slider range: 0–30 min, value-cel toont "N min"
+
+### 5.12 Crash-analyse ROOM (12 april 2026)
+
+Analyse op basis van Google Sheets log (4–12 april 2026, 8331 rijen).
+
+**Twee niet-manuele crashes:**
+
+| Crash | Tijdstempel | Uptime | heap_block op crashmoment | heap_min bereikt in run |
+|---|---|---|---|---|
+| 1 | 7 apr 21:41 | 83,2h (299.640s) | 35 KB ✅ | **2 KB** ⚠️ |
+| 2 | 12 apr 08:02 | 50,1h (180.840s) | 34 KB ✅ | 10 KB ⚠️ |
+
+**Conclusie:** geen directe OOM-crashes. heap_block was normaal op het crashmoment → waarschijnlijk **WDT-crash** door een geblokte taak tijdens een gefragmenteerd heap-moment.
+
+**Gevaarlijke heap-episode (4 april 18:01, uptime 27.360s):**
+- heap_block viel plots van 34 → **13 KB** en bleef 2 uur onder 25 KB
+- heap_min bereikte **2 KB** — vrijwel nul
+- Tegelijk triggerde de crashlog NVS feedback loop ~120× (elke 60s) → zie §2.8
+
+**Patroon ~5h na boot:**
+Runs 2 en 3 toonden consistent een heap_min daling naar 12–13 KB rond uptime 18.000–20.000s (~5h). Waarschijnlijk een intern Matter/WiFi-stack event (re-commissioning check of attribute sync timer).
+
+**Openstaande fixes:**
+
+| Fix | Prioriteit | Status |
+|---|---|---|
+| NVS crashlog feedback loop (§2.8) | Hoog | ⏳ Niet geïmplementeerd |
+| CO2 `pulseIn()` blokkeert 400ms per 60s als sensor niet leest | Middel | ⏳ Niet geïmplementeerd |
+| Matter update-interval verlagen van 5s naar 30s | Laag | ⏳ Niet geïmplementeerd |
+
+**CO2 opmerking:** op de oude Photon-shield geeft de 5V pin slechts 4.3–4.4V → sensor leest niet, maar `co2_enabled = true` → `pulseIn()` blokkeert toch 400ms per 60s. Samen met `delay(750)` DS18B20: main loop is elke minuut ~1.150ms aaneengesloten geblokkeerd.
+
+### 5.13 Openstaande punten ROOM
+
+**Prioriteit 1 — Crashstabiliteit:**
+- NVS crashlog feedback loop fixen (§2.8)
+- CO2 `pulseIn()` bewaken: als sensor niet leest → skip (guard op timeout)
+
+**Prioriteit 2 — AM312 integratie:**
+- Controleer sketch-logica bij overgang van HC-SR501 naar AM312 (active HIGH vs LOW)
+
+**Prioriteit 3 — Aparte tegels Apple Home:**
 Thermostat naar EP9, losse `MatterTemperatureSensor` als EP1. Matter reset vereist. Referentie: `Oude_MATTER_ROOM_3mar.ino`.
 
-**Prioriteit 2 — Gedeeld CSS endpoint:**
+**Prioriteit 4 — Dashboard matrix MOV-kolommen:**
+Kolommen 6 en 7 in de ROOM matrix-rij gebruiken momenteel `y`/`z` (lamp aan). Aanpassen naar `w > 0` / `x > 0` (beweging ongeacht licht) — conform nieuwe UI-logica.
+
+**Prioriteit 5 — Gedeeld CSS endpoint:**
 ```cpp
 server.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *request) {
   AsyncWebServerResponse *r = request->beginResponse(200, "text/css", gedeelde_css);
@@ -755,7 +894,6 @@ server.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *request) {
   request->send(r);
 });
 ```
-Elke pagina vervangt `<style>...</style>` door `<link rel="stylesheet" href="/style.css">`. Geschatte winst: ~2–3 KB minder fragmentatie per request.
 
 ---
 
@@ -769,7 +907,7 @@ Elke pagina vervangt `<style>...</style>` door `<link rel="stylesheet" href="/st
 | Voeding | Test: 5V USB-C / Productie: 5V via VIN (Zarlar shield, PTC 500 mA) |
 | Static IP | 192.168.0.60 |
 | WebServer | `WebServer` (blocking) — bewust, niet `AsyncWebServer` |
-| Sketch | `ESP32_C6_Zarlar_Dashboard_MATTER_v4_5.ino` v4.5 |
+| Sketch | `ESP32_C6_Zarlar_Dashboard_MATTER_v5_0.ino` v5.0 |
 | Statusmatrix | 16×16 WS2812B op IO4 via Pixel-line connector (shield R3=33Ω) |
 
 ⚠️ **30-pin vs 32-pin:** het Dashboard gebruikt een 30-pin board. De pinvolgorde verschilt van het 32-pin board — gebruik de pinout van het 30-pin board bij hardware-aanpassingen. IO14 ontbreekt op beide formfactors.
@@ -853,7 +991,7 @@ Scan-resultaat: alle netwerken behalve eigen SSID, max 4, gesorteerd sterkste ee
 
 ### 6.8 Statusmatrix 16×16 WS2812B
 
-De Zarlar Matrix is een **16×16 WS2812B LED-paneel** (256 pixels, serpentine adressering) gemonteerd in een houten kader met glazen voorkant. Een geprinte transparant bovenop het glas labelleert elke pixel. Samen vormt dit een permanent zichtbaar statusdisplay dat de toestand van het volledige huis toont — zonder scherm of app.
+De Zarlar Matrix is een **16×16 WS2812B LED-paneel** (256 pixels, serpentine adressering) gemonteerd in een houten kader met glazen voorkant. Een geprinte transparant bovenop het glas labelleert elke pixel.
 
 #### Fysieke opstelling
 
@@ -930,8 +1068,8 @@ De Zarlar Matrix is een **16×16 WS2812B LED-paneel** (256 pixels, serpentine ad
 | 3 | `e` | Temp DHT22 | Blauw<18° / groen / geel / rood>26° |
 | 4 | `h` | Vochtigheid | Groen<50% / geel / oranje / rood>85% |
 | 5 | `k` | CO2 | Groen<800 / geel / oranje / rood≥1500 ppm |
-| 6 | `y` | MOV1 | Warm wit=beweging, dim=stil |
-| 7 | `z` | MOV2 | Warm wit=beweging, dim=stil |
+| 6 | `y` | MOV1 lamp | Warm wit=lamp aan ⚠️ **update naar `w>0` gewenst** |
+| 7 | `z` | MOV2 lamp | Warm wit=lamp aan ⚠️ **update naar `x>0` gewenst** |
 | 8 | `d` | TSTAT | Rood=warmtevraag, dim=uit |
 | 9 | `j` | Dauw alert | Rood=alert, dim blauw=OK |
 | 10 | `q`/`r`/`s` | Kamerkleur | Werkelijke RGB van NeoPixels (geschaald) |
@@ -971,8 +1109,6 @@ Serial commando's: `matrix-test`, `matrix-update`
 
 #### Kolom-indeling ROOM via Photon fallback (rijen 5–11, tijdelijk)
 
-Zolang een ESP32-controller nog niet actief is, toont de matrix Photon-data via `renderPhotonRow()`. De Photon-keys verschillen van de ESP32 ROOM-keys:
-
 | Col | Photon key | Label | Zelfde logica als ROOM |
 |-----|-----------|-------|----------------------|
 | 0 | — | Status | groen=online, rood=offline |
@@ -994,16 +1130,13 @@ Zolang een ESP32-controller nog niet actief is, toont de matrix Photon-data via 
 
 #### Automatische ESP32/Photon fallback (v5.0+)
 
-De matrix kiest per rij automatisch welke controller te tonen:
-
 ```
 1. ESP32-controller actief + json aanwezig  → renderRoomRow()   (definitief)
 2. ESP32 inactief of geen data              → renderPhotonRow() (tijdelijk)
 3. Geen enkele controller beschikbaar       → zwart
 ```
 
-Dit wordt bestuurd via de `MatrixRowDef` struct in de sketch:
-
+Dit wordt bestuurd via de `MatrixRowDef` struct:
 ```cpp
 struct MatrixRowDef {
   int esp_idx;     // ESP32 R-controller idx (-1 = geen)
@@ -1014,13 +1147,7 @@ struct MatrixRowDef {
 
 **Transitie-workflow:** zodra een nieuwe ESP32-controller klaar is, activeer hem in `/settings` → de matrix schakelt automatisch om van Photon naar ESP32. **Geen reflash nodig.**
 
-**Diagnostiek:** typ `status` in Serial Monitor na een poll-cyclus. Output per rij:
-```
-rij  6 → Photon idx 15 (P-Badkamer) ✓ fallback [ESP32 R-BADK inactief]
-rij 10 → ESP32  idx 11 (R-EETPL)    ✓ actief
-```
-
-#### Huidige MROW-mapping (v5.0, stemt overeen met SVG labelsheet)
+#### Huidige MROW-mapping (v5.0)
 
 | Matrix rij | SVG label | ESP32 idx | Photon idx | Actief als |
 |-----------|----------|-----------|-----------|-----------|
@@ -1042,6 +1169,7 @@ rij 10 → ESP32  idx 11 (R-EETPL)    ✓ actief
 - **OTA testen** — nog niet gedaan op Dashboard
 - **Matter pairing** uitvoeren en testen met Apple Home
 - **Heap-baseline** meten na Matter-activatie + matrix
+- **Matrix kolommen 6/7 ROOM:** aanpassen van `y`/`z` (lamp aan) naar `w>0`/`x>0` (beweging ongeacht licht) — conform ROOM v2.19 UI
 
 ---
 
@@ -1062,7 +1190,7 @@ Elke ROOM controller meet lokaal de luchtvochtigheid. Bij overschrijding van een
 | `HVAC_GoogleScript_v4.gs` | GAS HVAC — 31 kolommen A–AE |
 | `ESP32_C6_MATTER_ECO_v1.23.ino` | ECO productieversie — huidig |
 | `ECO_GoogleScript.gs` | GAS ECO — 20 kolommen A–T |
-| `ESP32-C6_MATTER_ROOM_15mar_2200.ino` | ROOM v2.10 — Matter + heap stabiel |
+| `ESP32-C6_MATTER_ROOM_12apr_v219.ino` | ROOM v2.19 — huidig productie |
 | `ROOM_GoogleScript_v1_4.gs` | GAS ROOM — 37 kolommen A–AK |
 | `Oude_MATTER_ROOM_3mar.ino` | Referentie: werkende Matter endpoint-volgorde (aparte tegels) |
 | `partitions_16mb.csv` | Custom partitietabel voor alle vier controllers |
@@ -1086,7 +1214,11 @@ Elke ROOM controller meet lokaal de luchtvochtigheid. Bij overschrijding van een
    - ECO gebruikt RSSI key `p`, alle andere controllers gebruiken `ac`
    - Dashboard gebruikt `WebServer` (blocking), niet `AsyncWebServer`
    - Pairing code altijd in webUI tonen, niet alleen in Serial
+   - **Nooit de volledige JS-block in één str_replace vervangen** — altijd chirurgisch
+   - **`DOMContentLoaded` gebruiken** in plaats van `window.addEventListener('load')` voor inline scripts
+   - **Geen nieuwe JSON-keys toevoegen** tenzij expliciete toestemming — bestaande consumers (Sheets, Dashboard, Matrix) breken stil
+   - PIR triggers direct herberekenen na `pushEvent()` via `countRecent()` in loop
 
 ---
 
-*Zarlar project — Filip Delannoy — bijgewerkt 1 april 2026*
+*Zarlar project — Filip Delannoy — bijgewerkt 12 april 2026*
