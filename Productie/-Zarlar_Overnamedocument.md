@@ -1,6 +1,6 @@
 # Zarlar Thuisautomatisering — Master Overnamedocument
 **ESP32-C6 · Arduino IDE · Matter · Google Sheets**
-*Filip Delannoy — Zarlardinge (BE) — bijgewerkt 12 april 2026*
+*Filip Delannoy — Zarlardinge (BE) — bijgewerkt 13 april 2026*
 
 ---
 
@@ -29,8 +29,8 @@ Een volledig zelfgebouwd thuisautomatiseringssysteem op basis van drie ESP32-C6 
 |---|---|---|---|---|---|---|
 | **HVAC** | ESP32_HVAC.local | 192.168.0.70 | 58:8C:81:32:2B:90 | 32-pin clone (experimenteerbord) | v1.19 | ✅ Productie, stabiel |
 | **ECO Boiler** | ESP32_ECO Boiler | 192.168.0.71 | 58:8C:81:32:2B:D4 | 32-pin clone (blote controller) | v1.23 | ✅ Productie, stabiel |
-| **ROOM / Eetplaats** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:2F:48 | 32-pin clone | **v2.19** | ✅ Matter + heap stabiel |
-| **Testroom** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:29:54 | 32-pin clone (experimenteerbord, kromme pinnetjes) | v2.19 | 🔄 Zelfde IP als EETPL — actief als R-EETPL (ctrl idx 11) |
+| **ROOM / Eetplaats** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:2F:48 | 32-pin clone | **v2.21** | ✅ Matter + heap stabiel |
+| **Testroom** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:29:54 | 32-pin clone (experimenteerbord, kromme pinnetjes) | v2.21 | 🔄 Zelfde IP als EETPL — actief als R-EETPL (ctrl idx 11) |
 | **Zarlar Dashboard** | ESP32_ZARLAR.local | 192.168.0.60 | A8:42:E3:4B:FA:BC | 30-pin clone (blote controller) | **v5.0** | ✅ Matter + Matrix 16×16 |
 
 ⚠️ **MAC-wissel HVAC:** het experimenteerbord (MAC `58:8C:81:32:29:54`) is eerder ook als HVAC-controller gebruikt. De huidige productie-HVAC draait op `58:8C:81:32:2B:90`. Bij twijfel: check het MAC-adres in de serial output bij boot.
@@ -357,7 +357,7 @@ if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < 25000) {
 ```
 Crash-info tonen in `/settings`: laatste reden + teller + resetknop.
 
-⚠️ **NVS crashlog feedback loop (geleerd 12 april 2026):** de crashlog schrijft elke 60s naar NVS zolang heap_block < 25 KB. Elke `begin()/end()` alloceert tijdelijk een NVS-buffer — dat maakt de toch al krappe heap nog krapper. Fix: schrijf crashlog **maximaal één keer per low-heap episode** via een vlag:
+⚠️ **NVS crashlog feedback loop (geleerd 12 april 2026) — opgelost in v2.20:** de crashlog schrijft elke 60s naar NVS zolang heap_block < 25 KB. Elke `begin()/end()` alloceert tijdelijk een NVS-buffer — dat maakt de toch al krappe heap nog krapper. Fix: schrijf crashlog **maximaal één keer per low-heap episode** via een statische vlag:
 ```cpp
 static bool crash_logged_this_episode = false;
 if (lb < 25000 && !crash_logged_this_episode) {
@@ -367,7 +367,7 @@ if (lb < 25000 && !crash_logged_this_episode) {
     crash_logged_this_episode = false;
 }
 ```
-**Nog niet geïmplementeerd in v2.19 — openstaand punt.**
+✅ **Geïmplementeerd in v2.20.**
 
 ### 2.9 Serial commando's (alle vier sketches)
 
@@ -418,7 +418,7 @@ if (lb < 25000 && !crash_logged_this_episode) {
 - **Automatische fallback-logica:** gebruik `MatrixRowDef { esp_idx, photon_idx, sys_idx }` per rij. `updateMatrix()` kiest dynamisch ESP32 → Photon → zwart. Geen reflash nodig bij transitie.
 - **Controller-index verificatie:** de controller-indices in MROW zijn niet hardcoded op volgorde in de sketch maar afhankelijk van de dashboard `/settings` configuratie. Altijd verifiëren via `status` commando na flash — nooit aannemen.
 
-### 2.14 WebUI JavaScript — lessen (geleerd 12 april 2026)
+### 2.14 WebUI JavaScript — lessen (geleerd 12–13 april 2026)
 
 - **Nooit de volledige JS-block in één `str_replace` vervangen.** Één fout in quote-escaping breekt het complete script onzichtbaar — alle functies stoppen. Gebruik altijd kleine, chirurgische ingrepen op specifieke regels.
 - **`DOMContentLoaded` betrouwbaarder dan `window.addEventListener('load')`** voor inline scripts in gestreamde HTML-pagina's. Bij pagina's zonder externe resources kan `load` al gevuurd zijn vóór het inline script volledig geparsed is → `setInterval` wordt nooit geregistreerd → auto-refresh stopt. Gebruik:
@@ -429,7 +429,7 @@ if (lb < 25000 && !crash_logged_this_episode) {
     setInterval(updateClock, 1000);
   });
   ```
-- **Klok onafhankelijk van JSON-fetch:** gebruik een aparte `updateClock()` met `setInterval(updateClock, 1000)` die enkel de browsertijd toont. Sla de uptime op als globale `lastUptime` en update die in de fetch-callback. Zo tikt de klok door ook als de JSON-fetch tijdelijk faalt.
+- **Klok onafhankelijk van JSON-fetch:** gebruik een aparte `updateClock()` met `setInterval(updateClock, 1000)`. Sla de uptime op als globale `lastUptime` en update die in de fetch-callback. Zo tikt de klok door ook als de JSON-fetch tijdelijk faalt.
 - **Slider DOM-waarde uitlezen voor value-cel update** (geen JSON-key nodig):
   ```js
   else if(lbl.includes('Dim snelheid')){
@@ -437,12 +437,16 @@ if (lb < 25000 && !crash_logged_this_episode) {
     if(sl) td.textContent=sl.value+' s';
   }
   ```
-  Werkt altijd synchroon na `submitAjax`.
+- **Slider niet overschrijven terwijl de gebruiker hem versleept** — gebruik `document.activeElement` check:
+  ```js
+  if(sl && sl !== document.activeElement) sl.value = data.g;
+  ```
 - **PIR triggers direct herberekenen na `pushEvent()`**, niet wachten op de 60s-gate:
   ```cpp
   pushEvent(mov1Times, MOV_BUF_SIZE);
   mov1_triggers = countRecent(mov1Times, MOV_BUF_SIZE);  // onmiddellijk!
   ```
+- **Dot-cirkels voor state die geen JSON-key heeft** (bv. AUTO/MANUEEL modes): dot updatet niet live na togglen — dit is verwarrend. Oplossing: elimineer de state (KISS), of voeg een JSON-key toe. Nooit een dot maken voor iets dat niet live kan updaten.
 
 ---
 
@@ -791,54 +795,73 @@ JSON ongewijzigd t.o.v. v2.10. Geen nieuwe keys toegevoegd in v2.12–v2.19.
 
 | Versie | Datum | Wijziging |
 |---|---|---|
+| v2.21 | 13 apr 2026 | KISS: `heating_mode` + `vent_mode` verwijderd. Matter `onChangeMode` → `home_mode`. CO2 dot bij ventilatieslider. Slider volgt werkelijke vent_percent. Vent default 25%. |
+| v2.20 | 13 apr 2026 | Crash-stabiliteit: NVS crashlog feedback loop fix, Matter interval 5s→30s, CO2 pulseIn timeout 200ms→50ms |
 | v2.19 | 12 apr 2026 | Dim snelheid + Licht tijd: JS handler leest slider DOM-waarde; format "N s" / "N min" |
 | v2.18 | 12 apr 2026 | MOV triggers direct herberekend bij PIR-event via `countRecent()` na `pushEvent()` |
 | v2.17 | 12 apr 2026 | JSON terug naar origineel (680 bytes, geen nieuwe keys) — v2.13/14/15/16 NG |
 | v2.16 | 12 apr 2026 | Heropbouw: timer fix (DOMContentLoaded + updateClock), alle features v2.13–v2.14 correct |
-| v2.15 | 12 apr 2026 | NG — niet geflasht |
-| v2.14 | 12 apr 2026 | NG — JS grote block vervanging brak submitAjax en setInterval |
-| v2.13 | 12 apr 2026 | NG — JS grote block vervanging brak slider-save en heating-logica |
+| v2.13–v2.15 | 12 apr 2026 | NG — JS grote block vervanging brak submitAjax en setInterval |
 | v2.12 | 12 apr 2026 | UI: binaire waarden → gekleurde .dot cirkels; MOV AUTO-kleur bug fix (hardcoded groen → neo_r/g/b) |
 | v2.11 | 16 mrt 2026 | `/set_home` endpoint voor Dashboard HOME/UIT broadcast |
 | v2.10 | 15 mrt 2026 | Matter fixes + heap-optimalisatie (String → char[]), stabiele baseline |
 
-### 5.11 ROOM UI — nieuwe features (v2.12–v2.19)
+### 5.11 ROOM UI — features (v2.12–v2.21)
 
 #### Dot-cirkels in statuspagina
 
-Binaire waarden worden getoond als gekleurde cirkels (`.dot` CSS class):
+Binaire waarden worden getoond als gekleurde cirkels (`.dot` CSS class, 14×14px, border-radius 50%):
 
 | Label | Kleur true | JSON key | Opmerking |
 |---|---|---|---|
 | Dauwpunt alarm | 🔴 `#c00` | `j` | |
-| Verwarming AUTO | 🟢 teal `#1a9e6e` | server-render only | Geen live JS-update (geen JSON-key) |
 | Verwarming aan | 🟠 `#e05c00` | `b` | |
-| Ventilatie AUTO | 🔵 `#3aafe0` | server-render only | Geen live JS-update (geen JSON-key) |
 | Hardware thermostaat | 🟢 `#2a9d2a` | `d` | |
-| Thuis | 🟢 `#2a9d2a` | `v` | |
+| Thuis | 🟢 `#2a9d2a` | `v` | Live update + Apple Home thermostat synchroon |
 | MOV1 | 🔴 `#c00` | `w > 0` | Beweging gedetecteerd, ongeacht licht |
 | MOV2 | 🔴 `#c00` | `x > 0` | Beweging gedetecteerd, ongeacht licht |
-| Pixel 0..N | ⬤ neo-kleur | `y`/`z`/`t` | Werkelijke neopixel RGB |
+| Pixel 0..N | ⬤ neo-kleur | `y`/`z`/`t` | Werkelijke neopixel RGB als lamp aan |
 | Bed modus | 🟣 `#7b2fbe` | `p` | |
 | Beam alert | 🔴 `#c00` | `ab` | |
+| CO2 dot (naast vent slider) | 🔵 `#3aafe0` / grijs | `k > 0` | Lichtblauw = CO2 stuurt ventilatie, grijs = slider bepaalt |
 
-⚠️ "Verwarming AUTO" en "Ventilatie AUTO" hebben geen JSON-key. De dot is correct bij paginalading (server-render), maar updatet niet live na togglen. Na toggle is de schakelaar zelf de zichtbare indicator.
+**Verwijderd in v2.21:** "Verwarming AUTO" en "Ventilatie AUTO" dots — zie §5.14.
+
+#### Verwarmings- en ventilatielogica (v2.21)
+
+**Verwarming — altijd automatisch:**
+```
+Thuis (home_mode=1) + TSTAT aanwezig → volg hardware thermostaat pin
+Weg (home_mode=0) of geen TSTAT     → setpoint vs kamertemp + dauwpuntbeveiliging
+```
+Anti-condensbeveiliging is altijd actief: `effective_setpoint = max(heating_setpoint, dew + margin)`
+
+**Ventilatie:**
+```
+co2_enabled && co2 > 0  → vent_percent = map(co2, 400–800 ppm, 0–100%)  [CO2 dot lichtblauw]
+Anders                  → vent_percent = slider-waarde                   [CO2 dot grijs]
+Slider updatet automatisch mee met werkelijke vent_percent via JS
+Default bij boot: vent_request_default (NVS, standaard 25%)
+```
+
+**Apple Home thermostat koppeling:**
+```
+Apple Home thermostat → UIT   = home_mode = 0 (Weg) + NVS opslaan
+Apple Home thermostat → HEAT  = home_mode = 1 (Thuis) + NVS opslaan
+```
+Apple Home thermostat en "Thuis" toggle in webUI zijn volledig synchroon en persistent.
 
 #### Licht-aan tijd slider (`light_on_min`)
 
 ```cpp
 // NVS key: "light_on_min"  (int, 0–30, default 0)
-// Berekening:
 inline unsigned long lightOnDuration() {
   return (unsigned long)light_on_min * 60000UL + 5000UL;
 }
-// Slider = 0 → 5s, Slider = 5 → 5 min + 5s, enz.
+// Slider = 0 → 5s, Slider = 5 → 5 min + 5s
 ```
-
-- Persistent in NVS, overleeft Matter nuclear reset
 - Endpoint: `/set_light_on_min?mins=N`
 - Positie in UI: direct onder MOV2, vóór NeoPixel kleurkiezer
-- Slider range: 0–30 min, value-cel toont "N min"
 
 ### 5.12 Crash-analyse ROOM (12 april 2026)
 
@@ -871,11 +894,42 @@ Runs 2 en 3 toonden consistent een heap_min daling naar 12–13 KB rond uptime 1
 
 **CO2 opmerking:** op de oude Photon-shield geeft de 5V pin slechts 4.3–4.4V → sensor leest niet, maar `co2_enabled = true` → `pulseIn()` blokkeert toch 400ms per 60s. Samen met `delay(750)` DS18B20: main loop is elke minuut ~1.150ms aaneengesloten geblokkeerd.
 
-### 5.13 Openstaande punten ROOM
+### 5.14 KISS-simplificatie verwarmings- en ventilatielogica (v2.21)
 
-**Prioriteit 1 — Crashstabiliteit:**
-- NVS crashlog feedback loop fixen (§2.8)
-- CO2 `pulseIn()` bewaken: als sensor niet leest → skip (guard op timeout)
+**Wat verwijderd is en waarom:**
+
+`heating_mode` en `vent_mode` zijn verwijderd. Ze waren:
+- **Niet NVS-persistent** → na reboot altijd terug op AUTO, instelling verloren
+- **Zonder meerwaarde** → de setpoint-slider doet hetzelfde veiliger voor verwarming; de ventilatiesilider doet hetzelfde voor ventilatie
+- **`heating_mode = MANUEEL`** negeerde het setpoint, de TSTAT én de dauwpuntbeveiliging — gevaarlijk
+- **`vent_mode = AUTO`** gaf altijd 0% omdat CO2 niet werkte — nutteloos
+- **Dot-cirkels updatenden niet live** omdat er geen JSON-key was — verwarrend
+
+**Wat er voor in de plaats komt:**
+
+Niets — de bestaande sliders en `home_mode` dekken alle use cases. Eenvoudiger, veiliger, volledig persistent.
+
+**Matter `onChangeMode` — nieuwe koppeling:**
+
+Apple Home thermostat heeft een UIT-knop. Vroeger: deed niets nuttig (`heating_mode = MANUEEL`). Nu:
+```
+Thermostat UIT  → home_mode = 0 (Weg) + NVS persistent
+Thermostat HEAT → home_mode = 1 (Thuis) + NVS persistent
+```
+Apple Home thermostat en de "Thuis" toggle in de webUI zijn nu volledig synchroon.
+
+**CO2 dot naast ventilatieslider:**
+- 🔵 lichtblauw: CO2 > 0 → CO2 stuurt de ventilatiesnelheid automatisch
+- ⚪ grijs: CO2 = 0 of uitgeschakeld → slider bepaalt
+- Slider volgt automatisch de werkelijke `vent_percent` waarde (ook als CO2 die instelt)
+- `document.activeElement` check: slider wordt niet overgeschreven terwijl je hem versleept
+
+### 5.15 Openstaande punten ROOM
+
+**Prioriteit 1 — Crashstabiliteit (v2.20 geflasht, 24u evaluatie lopende):**
+- NVS crashlog feedback loop: max 1x per episode ✅ gedaan
+- Matter interval 5s → 30s ✅ gedaan
+- CO2 pulseIn timeout 200ms → 50ms ✅ gedaan
 
 **Prioriteit 2 — AM312 integratie:**
 - Controleer sketch-logica bij overgang van HC-SR501 naar AM312 (active HIGH vs LOW)
@@ -884,16 +938,10 @@ Runs 2 en 3 toonden consistent een heap_min daling naar 12–13 KB rond uptime 1
 Thermostat naar EP9, losse `MatterTemperatureSensor` als EP1. Matter reset vereist. Referentie: `Oude_MATTER_ROOM_3mar.ino`.
 
 **Prioriteit 4 — Dashboard matrix MOV-kolommen:**
-Kolommen 6 en 7 in de ROOM matrix-rij gebruiken momenteel `y`/`z` (lamp aan). Aanpassen naar `w > 0` / `x > 0` (beweging ongeacht licht) — conform nieuwe UI-logica.
+Kolommen 6 en 7 in de ROOM matrix-rij gebruiken `y`/`z` (lamp aan). Aanpassen naar `w > 0` / `x > 0` (beweging ongeacht licht).
 
 **Prioriteit 5 — Gedeeld CSS endpoint:**
-```cpp
-server.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *request) {
-  AsyncWebServerResponse *r = request->beginResponse(200, "text/css", gedeelde_css);
-  r->addHeader("Cache-Control", "public, max-age=86400");
-  request->send(r);
-});
-```
+Geschatte winst: ~2–3 KB minder fragmentatie per request.
 
 ---
 
@@ -1190,7 +1238,7 @@ Elke ROOM controller meet lokaal de luchtvochtigheid. Bij overschrijding van een
 | `HVAC_GoogleScript_v4.gs` | GAS HVAC — 31 kolommen A–AE |
 | `ESP32_C6_MATTER_ECO_v1.23.ino` | ECO productieversie — huidig |
 | `ECO_GoogleScript.gs` | GAS ECO — 20 kolommen A–T |
-| `ESP32-C6_MATTER_ROOM_12apr_v219.ino` | ROOM v2.19 — huidig productie |
+| `ESP32-C6_MATTER_ROOM_13apr_v221.ino` | ROOM v2.21 — huidig productie |
 | `ROOM_GoogleScript_v1_4.gs` | GAS ROOM — 37 kolommen A–AK |
 | `Oude_MATTER_ROOM_3mar.ino` | Referentie: werkende Matter endpoint-volgorde (aparte tegels) |
 | `partitions_16mb.csv` | Custom partitietabel voor alle vier controllers |
@@ -1217,8 +1265,10 @@ Elke ROOM controller meet lokaal de luchtvochtigheid. Bij overschrijding van een
    - **Nooit de volledige JS-block in één str_replace vervangen** — altijd chirurgisch
    - **`DOMContentLoaded` gebruiken** in plaats van `window.addEventListener('load')` voor inline scripts
    - **Geen nieuwe JSON-keys toevoegen** tenzij expliciete toestemming — bestaande consumers (Sheets, Dashboard, Matrix) breken stil
+   - **Geen state-variabelen toevoegen die niet NVS-persistent zijn** — na reboot verloren, verwarrend voor gebruiker
+   - **KISS:** als een feature vervangen kan worden door een bestaande slider of toggle, doe dat. Geen AUTO/MANUEEL lagen boven sliders die al volledig functioneel zijn.
    - PIR triggers direct herberekenen na `pushEvent()` via `countRecent()` in loop
 
 ---
 
-*Zarlar project — Filip Delannoy — bijgewerkt 12 april 2026*
+*Zarlar project — Filip Delannoy — bijgewerkt 13 april 2026*
