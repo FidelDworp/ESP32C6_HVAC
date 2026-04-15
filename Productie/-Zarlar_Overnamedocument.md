@@ -1,6 +1,6 @@
 # Zarlar Thuisautomatisering — Master Overnamedocument
 **ESP32-C6 · Arduino IDE · Matter · Google Sheets**
-*Filip Delannoy — Zarlardinge (BE) — bijgewerkt 13 april 2026*
+*Filip Delannoy — Zarlardinge (BE) — bijgewerkt 14 april 2026*
 
 ---
 
@@ -31,7 +31,7 @@ Een volledig zelfgebouwd thuisautomatiseringssysteem op basis van drie ESP32-C6 
 | **ECO Boiler** | ESP32_ECO Boiler | 192.168.0.71 | 58:8C:81:32:2B:D4 | 32-pin clone (blote controller) | v1.23 | ✅ Productie, stabiel |
 | **ROOM / Eetplaats** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:2F:48 | 32-pin clone | **v2.21** | ✅ Matter + heap stabiel |
 | **Testroom** | ESP32_EETPLAATS | 192.168.0.80 | 58:8C:81:32:29:54 | 32-pin clone (experimenteerbord, kromme pinnetjes) | v2.21 | 🔄 Zelfde IP als EETPL — actief als R-EETPL (ctrl idx 11) |
-| **Zarlar Dashboard** | ESP32_ZARLAR.local | 192.168.0.60 | A8:42:E3:4B:FA:BC | 30-pin clone (blote controller) | **v5.0** | ✅ Matter + Matrix 16×16 |
+| **Zarlar Dashboard** | ESP32_ZARLAR.local | 192.168.0.60 | A8:42:E3:4B:FA:BC | 30-pin clone (blote controller) | **v5.3** | ✅ Matter + Matrix 16×16 |
 
 ⚠️ **MAC-wissel HVAC:** het experimenteerbord (MAC `58:8C:81:32:29:54`) is eerder ook als HVAC-controller gebruikt. De huidige productie-HVAC draait op `58:8C:81:32:2B:90`. Bij twijfel: check het MAC-adres in de serial output bij boot.
 
@@ -336,7 +336,36 @@ In de HVAC sketch staat `mcp.digitalWrite(idx, on_off ? LOW : HIGH)` op drie afz
 
 Dit is **bewuste duplicatie** — niet refactoren naar een centrale `applyRelay()` functie tenzij er een vierde pad bijkomt.
 
-### 2.7 JSON key synchronisatie — kritiek leermoment
+### 2.7 Dashboard polling — kritieke lessen (14 april 2026)
+
+**Heap-fragmentatie door `String last_json` in struct (opgelost in v5.2/v5.3):**
+
+Het Dashboard pollt elke minuut ~10 controllers. Elke poll deed vroeger `controllers[i].last_json = http.getString()` — een String in een struct die elke cyclus werd vrijgegeven en hergeallokeerd. Na ~11 dagen: 158.000+ alloc/free cycli → heap gefragmenteerd van 32 KB naar 21 KB → polls faalden stil (geen crash, geen foutmelding — HTTP-allocaties lukten niet meer).
+
+**Fix:** `char last_json[700]` in BSS (vaste allocatie bij compilatie, nooit heap). BSS-kost: 22 × 700 = 15.4 KB vast, maar nul fragmentatie.
+
+**Patroon voor poll naar `char[]`:**
+```cpp
+// CORRECT — tijdelijke String, onmiddellijk vrijgegeven na kopie:
+String body = http.getString();
+http.end();
+strlcpy(controllers[i].last_json, body.c_str(), sizeof(controllers[i].last_json));
+
+// FOUT — blokkeert loop() tot timeout:
+WiFiClient* stream = http.getStreamPtr();
+stream->readBytes(buf, sizeof(buf) - 1);  // wacht op VOLLEDIGE buffer → timeout!
+```
+
+`readBytes(buf, n)` blokkeert totdat exact `n` bytes gelezen zijn OF de timeout verstrijkt. JSON is ~300 bytes, buffer 699 bytes → elke poll wacht tot stream-timeout (~5s). Met 10 controllers: `loop()` blokkeerde tientallen seconden → WebServer onbereikbaar → UI bevriest → /settings laadt niet.
+
+**Symptomen van stille poll-mislukking door heap-uitputting:**
+- Google Sheets stopt met data ontvangen voor ESP32 controllers (Photons blijven werken — die posten zelf)
+- Dashboard UI bereikbaar, Photons rood in de knoppenrij maar JSON werkt wel via klik
+- Matrix toont alle Photon-rijen met enkel één rood statuslampje, rest zwart
+
+**Diagnostiek:** ga naar `http://192.168.0.60/settings` → kijk naar **Largest block**. Onder 25 KB = polls falen stil. Verwacht bij boot: ~30 KB (geel maar stabiel). Onder 25 KB na dagen = fragmentatie nog aanwezig ergens anders.
+
+### 2.8 JSON key synchronisatie — kritiek leermoment
 
 Wanneer een JSON-structuur in een controller hernoemd wordt (bijv. van lange namen naar compacte a/b/c-keys), **falen alle consumers (HVAC, Zarlar, Google Script) stil** — JSON-keys retourneren gewoon 0 als ze niet gevonden worden, zonder foutmelding.
 
@@ -345,7 +374,7 @@ Wanneer een JSON-structuur in een controller hernoemd wordt (bijv. van lange nam
 2. Zarlar Dashboard
 3. Google Apps Script
 
-### 2.8 Crash-logging (in alle drie sketches aanwezig)
+### 2.9 Crash-logging (in alle drie sketches aanwezig)
 
 ```cpp
 // setup(): vorige crash lezen
@@ -369,7 +398,7 @@ if (lb < 25000 && !crash_logged_this_episode) {
 ```
 ✅ **Geïmplementeerd in v2.20.**
 
-### 2.9 Serial commando's (alle vier sketches)
+### 2.10 Serial commando's (alle vier sketches)
 
 | Commando | Effect |
 |---|---|
@@ -377,7 +406,7 @@ if (lb < 25000 && !crash_logged_this_episode) {
 | `reset-all` | Wist alles: instellingen (NVS) + Matter-koppeling |
 | `status` | Uitgebreid statusrapport in Serial Monitor |
 
-### 2.10 NVS namespaces
+### 2.11 NVS namespaces
 
 | Namespace | Eigenaar | Mag aanraken? |
 |---|---|---|
@@ -390,14 +419,14 @@ if (lb < 25000 && !crash_logged_this_episode) {
 | `chip-config` | Matter intern | ❌ Niet aanraken |
 | `chip-counters` | Matter intern | ❌ Niet aanraken |
 
-### 2.11 Serial monitor — bekende valkuilen ESP32-C6
+### 2.12 Serial monitor — bekende valkuilen ESP32-C6
 
 - **Serial blijft leeg na boot:** `USB CDC On Boot` staat op `Disabled` in Arduino IDE → zetten op `Enabled`
 - **Serial blijft leeg na boot (2):** `#define Serial Serial0` aanwezig zonder Matter → verwijderen
 - **Serial mist boot-berichten:** sketch print te snel na reset, monitor opent te laat → `delay(3000)` na `Serial.begin(115200)` in `setup()`
 - **Captive portal werkt niet op Mac Safari:** `onNotFound` alleen volstaat niet — expliciete handlers nodig voor Apple/Android/Windows detectie-URLs (zie §6.5)
 
-### 2.12 WiFi scan — lessen
+### 2.13 WiFi scan — lessen
 
 - `WiFi.channel(k)` kan `0` teruggeven voor bepaalde netwerken → `ch < 1` filter verwijdert geldige netwerken
 - ESP32-C6 is **2.4GHz-only** → geen channel-filter nodig
@@ -406,7 +435,7 @@ if (lb < 25000 && !crash_logged_this_episode) {
 - `Math.abs(c.r)` voor weergave — minteken weglaten vermijdt layout-problemen
 - `font-size` < 11px wordt onderdrukt door iOS Safari — gebruik minimum 11px. Voeg `-webkit-text-size-adjust:none` toe aan body
 
-### 2.13 Statusmatrix — lessen en valkuilen
+### 2.14 Statusmatrix — lessen en valkuilen
 
 - **WS2812B 5V voeding apart:** bij volle helderheid kan een 16×16 matrix >3A trekken. Nooit via shield PTC (max 500 mA). Aparte 5V rail verplicht.
 - **Serpentine adressering:** `matPxIdx()` converteert logische (rij, kolom) naar fysiek pixel-adres. Bij incorrecte richting: `#define MATRIX_FLIP_H true`. Testen via `matrix-test` Serial commando.
@@ -418,7 +447,7 @@ if (lb < 25000 && !crash_logged_this_episode) {
 - **Automatische fallback-logica:** gebruik `MatrixRowDef { esp_idx, photon_idx, sys_idx }` per rij. `updateMatrix()` kiest dynamisch ESP32 → Photon → zwart. Geen reflash nodig bij transitie.
 - **Controller-index verificatie:** de controller-indices in MROW zijn niet hardcoded op volgorde in de sketch maar afhankelijk van de dashboard `/settings` configuratie. Altijd verifiëren via `status` commando na flash — nooit aannemen.
 
-### 2.14 WebUI JavaScript — lessen (geleerd 12–13 april 2026)
+### 2.15 WebUI JavaScript — lessen (geleerd 12–13 april 2026)
 
 - **Nooit de volledige JS-block in één `str_replace` vervangen.** Één fout in quote-escaping breekt het complete script onzichtbaar — alle functies stoppen. Gebruik altijd kleine, chirurgische ingrepen op specifieke regels.
 - **`DOMContentLoaded` betrouwbaarder dan `window.addEventListener('load')`** voor inline scripts in gestreamde HTML-pagina's. Bij pagina's zonder externe resources kan `load` al gevuurd zijn vóór het inline script volledig geparsed is → `setInterval` wordt nooit geregistreerd → auto-refresh stopt. Gebruik:
@@ -955,7 +984,7 @@ Geschatte winst: ~2–3 KB minder fragmentatie per request.
 | Voeding | Test: 5V USB-C / Productie: 5V via VIN (Zarlar shield, PTC 500 mA) |
 | Static IP | 192.168.0.60 |
 | WebServer | `WebServer` (blocking) — bewust, niet `AsyncWebServer` |
-| Sketch | `ESP32_C6_Zarlar_Dashboard_MATTER_v5_0.ino` v5.0 |
+| Sketch | `ESP32_C6_Zarlar_Dashboard_MATTER_v5_3.ino` v5.3 |
 | Statusmatrix | 16×16 WS2812B op IO4 via Pixel-line connector (shield R3=33Ω) |
 
 ⚠️ **30-pin vs 32-pin:** het Dashboard gebruikt een 30-pin board. De pinvolgorde verschilt van het 32-pin board — gebruik de pinout van het 30-pin board bij hardware-aanpassingen. IO14 ontbreekt op beide formfactors.
@@ -1216,8 +1245,17 @@ struct MatrixRowDef {
 
 - **OTA testen** — nog niet gedaan op Dashboard
 - **Matter pairing** uitvoeren en testen met Apple Home
-- **Heap-baseline** meten na Matter-activatie + matrix
 - **Matrix kolommen 6/7 ROOM:** aanpassen van `y`/`z` (lamp aan) naar `w>0`/`x>0` (beweging ongeacht licht) — conform ROOM v2.19 UI
+- **`/settings` pagina traag (bekend na v5.3):** `getSettingsPage()` bouwt een grote String (~8 KB) op de heap — bij krappe heap duurt dit merkbaar lang. Oplossing: chunked streaming via een aparte `/settings` handler met `AsyncResponseStream` of opsplitsen in meerdere kleinere String-blokken. Prioriteit: laag (functioneel, niet kritiek).
+
+### 6.10 Versiehistorie Dashboard
+
+| Versie | Datum | Wijziging |
+|---|---|---|
+| **v5.3** | 14 apr 2026 | Poll fix: `stream->readBytes()` → `getString()+strlcpy()`. `readBytes(699)` blokkeerde `loop()` tot timeout per controller → UI bevroor, `/settings` laadde niet. |
+| **v5.2** | 14 apr 2026 | Root cause fix heap-fragmentatie: `String last_json` → `char last_json[700]` BSS. `snprintf` POST-body. `strstr/atoi` in status JSON. `const char*` in alle renderers. Reboot-knop + auto-herstart bij lb < 25KB > 60s. |
+| v5.1 | 2 apr 2026 | 5 controllers vervangen na ESD-schade: ZITPL, EETPL, OUTSIDE, ACCESS, INKOM. |
+| v5.0 | 1 apr 2026 | Automatische ESP32/Photon fallback per matrix-rij via `MatrixRowDef` struct. |
 
 ---
 
@@ -1231,7 +1269,7 @@ Elke ROOM controller meet lokaal de luchtvochtigheid. Bij overschrijding van een
 
 | Bestand | Beschrijving |
 |---|---|
-| `ESP32_C6_Zarlar_Dashboard_MATTER_v5_0.ino` | Dashboard v5.0 — Matrix + Photon fallback + Matter HOME/UIT |
+| `ESP32_C6_Zarlar_Dashboard_MATTER_v5_3.ino` | Dashboard v5.3 — heap fix + poll fix + reboot-knop |
 | `Zarlar_Matrix_Labels_v5.svg` | Transparant A4 voor matrix — kleurlaser, houtfoto als achtergrond in Inkscape |
 | `worker-status.js` | Cloudflare Worker v2.0 — `/sensor` endpoint voor Photon data |
 | `ESP32_C6_MATTER_HVAC_v1.19.ino` | HVAC productieversie — huidig |
@@ -1267,8 +1305,10 @@ Elke ROOM controller meet lokaal de luchtvochtigheid. Bij overschrijding van een
    - **Geen nieuwe JSON-keys toevoegen** tenzij expliciete toestemming — bestaande consumers (Sheets, Dashboard, Matrix) breken stil
    - **Geen state-variabelen toevoegen die niet NVS-persistent zijn** — na reboot verloren, verwarrend voor gebruiker
    - **KISS:** als een feature vervangen kan worden door een bestaande slider of toggle, doe dat. Geen AUTO/MANUEEL lagen boven sliders die al volledig functioneel zijn.
+   - **Dashboard poll-patroon:** `String body = http.getString(); strlcpy(buf, body.c_str(), sizeof(buf));` — nooit `stream->readBytes(buf, sizeof(buf))` (blokkeert loop tot timeout)
+   - **Dashboard `last_json` is `char[700]`** — geen `String`, geen `.length()`, gebruik `strlen()`
    - PIR triggers direct herberekenen na `pushEvent()` via `countRecent()` in loop
 
 ---
 
-*Zarlar project — Filip Delannoy — bijgewerkt 13 april 2026*
+*Zarlar project — Filip Delannoy — bijgewerkt 14 april 2026*
