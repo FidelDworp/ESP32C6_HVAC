@@ -459,6 +459,7 @@ Daarna in het Master-document: §4.4 (Matter) laten vervallen, §4.5 nieuwe heap
 | v2.3 | mDNS terug (`hvac.local`), enkel als WiFi verbonden is met een geldig IP (Master §3.14) | `http://hvac.local` werkt; `.70` blijft werken |
 | v2.4 | Geen polling/sensoren in AP-mode (Master §3.14) — eerst nakijken of dat al zo is | `/settings` blijft vlot in AP-mode |
 | v2.5 | Ventilatie-PWM 1 kHz → ~20 kHz, samen met de overstap naar de AnaBoX v2.0 (§6) | Spanning op klem 7-8 gelijk aan de oude AnaBoX bij 25/50/100% |
+| v2.6 | **Firmwareversie zichtbaar** onderaan de hoofdpagina (en in `/settings`), enkel bij het laden van de pagina — **niet** in `/json` (geen nieuwe key). Eén `#define HVAC_VERSION` bovenaan, gebruikt in de webpagina én de opstarttekst, zodat ze nooit meer uit elkaar lopen (v1.19 toont bij het opstarten nog "v1.10") | Versie leesbaar op `http://192.168.0.70/` |
 
 ---
 
