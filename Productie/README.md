@@ -8,7 +8,7 @@ De centrale controller in de kelder die de **verwarmingskringen**, de **ventilat
 | **Adres** | `http://192.168.0.70` (vast IP, geen mDNS) |
 | **Board** | ESP32-C6 32-pin clone, MAC `58:8C:81:32:2B:90` |
 | **Status** | ✅ Productie stabiel |
-| **Volgende stap** | Migratie zonder Matter → **v2.0** (zie [§10](#10-migratie-zonder-matter--v20)) — nu: **stap 1, geheugen meten** |
+| **Volgende stap** | Migratie zonder Matter → **v2.0**, daarna Sheets enkel via het Dashboard → **v2.1** (zie [§10](#10-migratie-zonder-matter--v20)) — nu: **stap 1, geheugen meten** |
 | **Systeemdocument** | [Zarlar Master Overnamedocument](https://github.com/FidelDworp/ZarlarApp/blob/main/ESP32_Zarlar/Zarlar_Master_Overnamedocument.md) — §4 gaat over deze controller |
 
 > **Leeswijzer.** §1 en §2 zijn voor wie het systeem leert kennen. §3 t.e.m. §9 beschrijven wat er nu draait. §10 en §11 beschrijven wat er nog moet gebeuren. Bij twijfel is **de sketch de waarheid**, niet dit document.
@@ -49,7 +49,10 @@ In elke kamer hangt een **room controller** (een eigen ESP32). Die weet hoe warm
                 └──────────────────────┘──► PWM → AnaBoX → ventilatie-unit
                            │
                            ▼
-          webpagina · /json · Google Sheets · Apple Home (Matter)
+          webpagina · /json · Apple Home (Matter)
+                           │
+                           ▼  (Zarlar Dashboard .60 haalt /json op)
+                     Google Sheets
 ```
 
 Drie taken:
@@ -91,7 +94,7 @@ De controller is bewust "dom": de slimheid (setpoints, aanwezigheid) zit in de r
 |---|---|
 | `Productie/ESP32C6_MATTER_HVAC.ino` | **Actieve sketch v1.19** |
 | `Productie/partitions.csv` | Geheugenindeling van de flash (16 MB, 2 × 6 MB app voor OTA). Moet naast het `.ino`-bestand staan. |
-| `Productie/HVAC_GoogleScript.gs` | Google Apps Script v5: ontvangt de data en schrijft ze in een Google Sheet |
+| `Productie/HVAC_GoogleScript.gs` | Google Apps Script v5: ontvangt de HVAC-data (via het Dashboard) en schrijft ze in een Google Sheet |
 | `Productie/README.md` | Dit document |
 | `ESP32_HVAC_Old-NoMatter.ino` | Oude ESP32-versie zonder Matter (januari 2026, V53.x). **Alleen ter referentie** — niet de basis voor v2.0 |
 | `HVAC_Photon.cpp` | De oorspronkelijke Particle Photon-sketch, vóór de overstap naar ESP32 |
@@ -224,7 +227,7 @@ Twee kleine transistors (2N7002, Q1 en Q2) zetten het 3,3V-PWM-signaal om naar e
   2. De AnaBoX v2.0 heeft **geen buffer** (de oude wel). Is de ingang van de unit laagohmig, dan zakt de spanning. Eerste oplossing: **R3 (1 kΩ) bestukken** (de plaats is voorzien op de print).
   3. Een **pulldown van ~100 kΩ op de gate van Q1** voorkomt dat de ventilator kort aanslaat tijdens het opstarten van de ESP32.
   4. C1 minstens 25 V (X7R). ESP32 en unit delen dezelfde GND.
-  5. **PWM-frequentie:** nu 1 kHz → ~0,25 V rimpel. Beter **~20 kHz** (rimpel ~12 mV). Wordt aangepast in v2.4 (§10).
+  5. **PWM-frequentie:** nu 1 kHz → ~0,25 V rimpel. Beter **~20 kHz** (rimpel ~12 mV). Wordt aangepast in v2.5 (§10).
 
 ### 6.4 Meting: ingangsweerstand van klem 7-8 (unit in bedrijf)
 
@@ -278,7 +281,7 @@ Twee kleine transistors (2N7002, Q1 en Q2) zetten het 3,3V-PWM-signaal om naar e
 
 | Groep | Velden |
 |---|---|
-| Algemeen | naam (`room_id`), WiFi SSID + wachtwoord, vast IP (leeg = DHCP), poll-interval (s), Google Script-URL |
+| Algemeen | naam (`room_id`), WiFi SSID + wachtwoord, vast IP (leeg = DHCP), poll-interval (s), Google Script-URL (**leeg laten** — zie §8.2; verdwijnt in v2.1) |
 | Kringen (1-7) | naam, IP of mDNS-naam van de kamer, vermogen (kW), TSTAT ja/nee + pin (10/11/12) |
 | ECO-boiler | IP of mDNS-naam, energiedrempel + hysterese (kWh), start- en stoptemperatuur (°C) |
 | SCH-boiler | referentietemperatuur (°C), volume per laag (l) |
@@ -331,9 +334,19 @@ Korte sleutels (`a`, `b`, …) houden het bericht klein. Dezelfde volgorde wordt
 
 ### 8.2 Google Sheets
 
-Is in `/settings` een Google Script-URL ingevuld, dan stuurt de controller **elke 5 min** de `/json`-data naar `HVAC_GoogleScript.gs` (v5). Dat script schrijft één rij per bericht en houdt maximaal 1000 rijen bij (~3,5 dagen); oudere rijen worden gewist.
+**Afspraak (beslist 18 okt 2026): controllers posten nooit zelf naar Google.** Het **Zarlar Dashboard** (`192.168.0.60`) haalt van elke controller de `/json` op en stuurt die door naar Google Sheets. Zo doet geen enkele controller zelf zware HTTPS-verbindingen (die vroeger crashes door geheugenkrapte veroorzaakten), en is er één plek voor alle logging.
 
-**Een scriptwijziging publiceren:** altijd *Implementaties beheren → potlood (bewerken) → nieuwe versie*, **nooit** "Nieuwe implementatie". Anders verandert de URL en moet die opnieuw in `/settings`.
+```
+HVAC .70  /json  ──►  Dashboard .60 (pollt, om de 5 cycli een POST)  ──►  HVAC_GoogleScript.gs  ──►  Sheet
+```
+
+- De URL van `HVAC_GoogleScript.gs` staat in **`http://192.168.0.60/settings`**, bij de controller **S-HVAC**.
+- Het Dashboard voegt een veld `"room"` toe; het HVAC-script negeert dat.
+- Het script schrijft één rij per bericht en houdt maximaal 1000 rijen bij; oudere rijen worden gewist.
+
+**Overgang:** v1.19 kan nog **zelf** posten, als in zijn eigen `/settings` een Google Script-URL ingevuld is. Dat veld moet **leeg** zijn, anders komt elke meting dubbel in de Sheet. De code ervoor verdwijnt in **v2.1** (§10, stap 5).
+
+**Een scriptwijziging publiceren:** altijd *Implementaties beheren → potlood (bewerken) → nieuwe versie*, **nooit** "Nieuwe implementatie". Anders verandert de URL en moet die opnieuw in de Dashboard-`/settings`.
 
 ---
 
@@ -398,7 +411,7 @@ Geen codewijziging nodig — v1.19 meet dit zelf.
 
 **Weg:** de Matter-`#include`'s · de 9 endpoints · de callbacks · `update_matter_sensors()` en de 5 s-update in `loop()` · `matterNuclearReset()` en de bijhorende vlag · de pagina's `/matter` en `/matter_reset` en de menulinks ernaar · serial `reset-matter` · `setOnOff()` in de kring-handlers en in `checkTstatPins()` · de pairing-wachtlus (max. 5 min) in `setup()`.
 
-**Blijft:** de ventilatie-override via de webslider, `total_power`, alle relais-, pomp-, poll- en Sheets-logica. Serial `reset-all` blijft (enkel de tekst "+ Matter" vervalt). **Verder niets wijzigen.**
+**Blijft:** de ventilatie-override via de webslider, `total_power`, alle relais-, pomp- en poll-logica, en de Sheets-push (die verdwijnt pas in v2.1). Serial `reset-all` blijft (enkel de tekst "+ Matter" vervalt). **Verder niets wijzigen.**
 
 **In dezelfde commit:**
 - bestandsnaam → `ESP32C6_HVAC.ino` (op de Mac ook de schetsmap hernoemen — Arduino IDE eist dat map en bestand dezelfde naam hebben)
@@ -418,14 +431,34 @@ Geen codewijziging nodig — v1.19 meet dit zelf.
 
 Daarna in het Master-document: §4.4 (Matter) laten vervallen, §4.5 nieuwe heap-baseline, §4.6 versiehistorie, §11.1 bestandsnaam, §16 tabel (HVAC zonder Matter).
 
+### Stap 5 — Google Sheets enkel via het Dashboard (v2.1)
+
+*Beslist 18 okt 2026: geen enkele controller post nog zelf naar Google (§8.2). Twee delen: eerst instellingen (geen code), daarna pas de code weghalen. Nooit samen met v2.0.*
+
+**5a — Instellingen nakijken (geen codewijziging, mag al vóór v2.0)**
+
+| # | Waar | Wat | Meetpunt |
+|---|---|---|---|
+| 1 | `http://192.168.0.60/settings` | Bij **S-HVAC** staat de URL van `HVAC_GoogleScript.gs` ingevuld | — |
+| 2 | Google Sheet | Er komen nieuwe rijen binnen via het Dashboard | Om de ±5 min één nieuwe rij |
+| 3 | `http://192.168.0.70/settings` | Veld **Google Script-URL leegmaken** en opslaan (controller herstart) | Na 30 min: geen dubbele rijen meer, wel nog rijen via het Dashboard |
+
+**5b — v2.1: de eigen Sheets-push uit de sketch halen**
+
+- **Weg:** `pushToGoogleSheets()`, de 5 min-timer in `loop()`, `gas_url` + `last_gas_push`, de NVS-key `gas_url`, het veld in `/settings` en `/save_settings`, `#include <WiFiClientSecure.h>`.
+- **Blijft:** `buildLogJson()` — dat is de inhoud van `/json`, die het Dashboard ophaalt. **De JSON-keys veranderen niet.**
+- **Meetpunt:** `/json` identiek aan v2.0 · Sheet blijft gevuld via het Dashboard · heap gelijk of beter.
+
+**Ook voor de andere controllers** (ROOM, ECO, S-ENERGY): dezelfde regel, telkens in hun eigen repo en in een eigen versie, eerst 5a (instellingen), dan pas de code. Master §1.1 en §3 zijn de plaats om die regel systeembreed vast te leggen.
+
 ### Daarna — elk een eigen versie, na GO
 
 | Versie | Wat | Meetpunt |
 |---|---|---|
-| v2.1 | `#define Serial Serial0` beslissen: poort "UART" of "USB" (Master §3.9) | Serial zichtbaar op de gekozen poort |
-| v2.2 | mDNS terug (`hvac.local`), enkel als WiFi verbonden is met een geldig IP (Master §3.14) | `http://hvac.local` werkt; `.70` blijft werken |
-| v2.3 | Geen polling/sensoren in AP-mode (Master §3.14) — eerst nakijken of dat al zo is | `/settings` blijft vlot in AP-mode |
-| v2.4 | Ventilatie-PWM 1 kHz → ~20 kHz, samen met de overstap naar de AnaBoX v2.0 (§6) | Spanning op klem 7-8 gelijk aan de oude AnaBoX bij 25/50/100% |
+| v2.2 | `#define Serial Serial0` beslissen: poort "UART" of "USB" (Master §3.9) | Serial zichtbaar op de gekozen poort |
+| v2.3 | mDNS terug (`hvac.local`), enkel als WiFi verbonden is met een geldig IP (Master §3.14) | `http://hvac.local` werkt; `.70` blijft werken |
+| v2.4 | Geen polling/sensoren in AP-mode (Master §3.14) — eerst nakijken of dat al zo is | `/settings` blijft vlot in AP-mode |
+| v2.5 | Ventilatie-PWM 1 kHz → ~20 kHz, samen met de overstap naar de AnaBoX v2.0 (§6) | Spanning op klem 7-8 gelijk aan de oude AnaBoX bij 25/50/100% |
 
 ---
 
@@ -434,10 +467,10 @@ Daarna in het Master-document: §4.4 (Matter) laten vervallen, §4.5 nieuwe heap
 | # | Wat | Wanneer |
 |---|---|---|
 | 1 | **Matter-migratie** | §10, nu bezig |
-| 2 | **Meting klem 7-8** en overstap van de Photon naar AnaBoX v2.0 | §6.4, vóór v2.4 |
+| 2 | **Meting klem 7-8** en overstap van de Photon naar AnaBoX v2.0 | §6.4, vóór v2.5 |
 | 3 | **kWh per pompbeurt** echt berekenen (Q = m × Cp × ΔT) i.p.v. vaste 0,5 kWh | na v2.0 |
 | 4 | **Witte pagina op de iPhone** bij de ventilatieslider (vermoedelijk geheugenkrapte bij herladen) | herbekijken na v2.0 — misschien opgelost door de heap-winst |
-| 5 | **Wie logt naar Google Sheets?** Volgens Master §1.1 doet het Dashboard (.60) dat voor alle controllers; deze sketch post zelf ook (`gas_url`). Nakijken of beide nodig zijn | na v2.0 |
+| 5 | **Google Sheets enkel via het Dashboard** — beslist; instellingen nakijken (5a) en daarna de eigen push uit de sketch halen (v2.1). Zelfde regel voor ROOM, ECO en S-ENERGY | §10 stap 5 |
 | 6 | *Optie:* klem 5-6 van de Begetube via een vrije MCP-pin (13-15) als harde aan/uit. Rusttoestand zo kiezen dat de unit **blijft ventileren** bij een storing. Nieuwe JSON-key enkel na afspraak | later |
 | 7 | *Optie:* Sjalay-verbeteringen, één per versie (live-JSON vs. waarden enkel bij het laden van de pagina, statuscirkels, korte sectietitels) | later |
 
