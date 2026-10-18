@@ -106,7 +106,7 @@ Je kunt het systeem bedienen via:
 - **Actuators**: 
   - 7× Relay modules (verwarmingscircuits)
   - 2× Relay modules (energie transfer pompen)
-  - 1× PWM output (ventilator)
+  - 1× PWM output (IO20 → AnaBoX → 0-10V-ingang ventilatie-unit Begetube 350 R)
 - **Communication**: WiFi 2.4GHz (Station + AP modes)
 
 ### Software Stack
@@ -247,11 +247,18 @@ Qtot = Σ(layer_kwh)
 vent_percent = max(circuit[0..6].vent_request)
 ```
 
-**Output**: PWM signal (0-255)
+**Effectieve ventilatie** (sinds v1.13): de hoogste waarde wint — kamervraag of HVAC-minimum (override via slider/Matter, vervalt na 3 u)
 ```cpp
-pwm_value = map(vent_percent, 0, 100, 0, 255)
-analogWrite(VENT_FAN_PIN, pwm_value);
+effective_vent = max(vent_percent, vent_override_active ? vent_override_percent : 0);
 ```
+
+**Output**: PWM op IO20 (0-255)
+```cpp
+pwm_value = map(effective_vent, 0, 100, 0, 255);
+ledcWrite(VENT_FAN_PIN, pwm_value);   // ESP32-C6: ledcWrite i.p.v. analogWrite
+```
+
+**Ventilatie-unit en PWM→0-10V-omzetting**: zie [Ventilation PWM](#ventilation-pwm) onder Hardware Interfacing.
 
 **Safety**: Pump feedback monitoring
 ```cpp
@@ -485,11 +492,74 @@ if (temp == DEVICE_DISCONNECTED_C || temp < -100) {
 
 ### Ventilation PWM
 
-**Output**:
+**Output (huidige sketch v1.19)**:
 ```cpp
-analogWrite(VENT_FAN_PIN, pwm_value);  // 0-255
-// Frequency: Default ESP32 PWM (usually 5kHz)
+#define VENT_FAN_PIN  20
+ledcAttach(VENT_FAN_PIN, 1000, 8);    // 1 kHz, 8-bit (0-255)
+ledcWrite(VENT_FAN_PIN, pwm_value);
 ```
+De ESP32-C6 heeft **geen DAC**: IO20 levert enkel 3,3V-PWM. De omzetting naar 0-10V gebeurt extern (AnaBoX, zie hieronder).
+
+> ⚠️ **Aandachtspunt PWM-frequentie:** met het RC-filter van de AnaBoX v2.0 (τ = 10 ms) geeft 1 kHz ~0,25 V rimpel bij 50%. Aanbevolen: **≥ 5-10 kHz, liefst ~20 kHz** (rimpel dan ~12 mV). Nog niet aangepast in de sketch — openstaand punt.
+
+#### Ventilatie-unit: Begetube 350 R (profi-air)
+
+Aansluiting op de **groene 8-polige connector** van de sturing (bron: gebruikershandleiding + mail technische dienst). Alle contacten potentiaalvrij.
+
+| Klemmen | Functie | Opmerking |
+|---|---|---|
+| 1-4 | Calamiteitscontact (brandsensor) | Standaard brug — **nooit verwijderen**, anders werkt de unit niet |
+| 1-2 | Stand 2 (P–T1) | Driestandenschakelaar — niet combineren met 0-10V-sturing |
+| 1-3 | Stand 3 (P–T2) | idem |
+| **5-6** | **PIR/timer-contact** | Gesloten = unit volgt 0-10V; open = unit schakelt uit. Standaard brug |
+| **7-8** | **0-10V-ingang** (CO2 / vocht / domotica) | Tekening: rood = 7 (+), blauw = 8 (−) — polariteit nameten vóór aansluiten |
+
+**Huidige toestand:** de unit wordt via klem 7-8 aangestuurd door een **Particle Photon met de oude AnaBoX** (op-amp-buffer). Doel: overschakelen naar de HVAC-controller (IO20) met de **AnaBoX v2.0**.
+
+**Mogelijke uitbreiding klem 5-6:** brug vervangen door een relaiscontact (bv. vrije MCP23017-pin 13-15) voor een harde aan/uit, los van de 0-10V. Kies bewust de rusttoestand: bij voorkeur zo dat de unit **blijft ventileren** bij een crash/stroomuitval (NC-contact of brug laten).
+
+**Nog onbekend (technische dienst kon niet antwoorden):** ingangsweerstand van klem 7-8, gedrag bij 0 V (stop of minimumtoerental), eventuele interne pull-up.
+
+#### AnaBoX v2.0 (iTroniX) — PWM → 0-10V
+
+Eigen ontwerp, PCB gemaakt in China. Twee 2N7002-trappen (Q1+Q2, samen niet-inverterend) zetten 3,3V-PWM om naar 0-VCC-PWM (PWM-OUT); RC-filter R4 (10k) + C1 (1 µF) maakt daar een gelijkspanning van (ANA-OUT).
+
+- **Aansluiting:** PWM-IN ← IO20 + GND · ANA-OUT pin 1 → klem 7, GND → klem 8
+- **Fail-safe:** geen PWM-signaal → Q2 geleidt → ANA-OUT = 0 V
+- **Aandachtspunten:**
+  1. **VCC = exact 10 V** en stabiel (uitgangsamplitude = VCC; rimpel op VCC komt in het stuursignaal)
+  2. **Uitgangsimpedantie** is ongelijk: ~20 kΩ naar boven (R2+R4), ~10 kΩ naar beneden (Q2+R4). Bij een laagohmige unit-ingang zakt de spanning en wordt het verloop niet-lineair. Eerste remedie: **R3 (1 kΩ) plaatsen** (staat op de print maar wordt in productie niet bestukt)
+  3. **Pulldown (~100 kΩ) op de gate van Q1** — voorkomt kort aanlopen van de ventilator bij boot/reset (zwevende pin)
+  4. C1 min. 25 V, X7R · gemeenschappelijke GND tussen ESP32 en unit
+  5. Verschil met de oude AnaBoX: die had een **op-amp-buffer** (lage uitgangsimpedantie), v2.0 niet
+
+#### Meetprocedure ingangsweerstand klem 7-8 (met unit in bedrijf)
+
+1. **Open spanning:** draad van klem 7 los, unit aan, spanning over 7-8 meten. Spanning aanwezig → interne pull-up.
+2. **Serieweerstand-methode** (met oude AnaBoX op 100%):
+   - Spanning op 7-8 meten → **V1**
+   - 10 kΩ in serie tussen AnaBoX en klem 7, opnieuw meten → **V2**
+   - **R<sub>in</sub> = 10k × V2 / (V1 − V2)**
+3. **Vergelijking oude vs. nieuwe AnaBoX** bij 25 / 50 / 100%, met de unit aangesloten.
+
+**Interpretatie:**
+
+| R<sub>in</sub> | Gevolg voor AnaBoX v2.0 |
+|---|---|
+| ≥ 100 kΩ | Werkt zoals hij is (enkele % afwijking); R3 plaatsen maakt het beter |
+| 10-50 kΩ | R3 (1k) zeker plaatsen; R4 → 1k en C1 → 10 µF |
+| < 10 kΩ | Buffer (op-amp) nodig, zoals de oude AnaBoX |
+
+**Meetresultaten** *(in te vullen)*:
+
+| Meting | Waarde |
+|---|---|
+| Open spanning 7-8 | |
+| V1 (oude AnaBoX, 100%) | |
+| V2 (met 10 kΩ in serie) | |
+| R<sub>in</sub> berekend | |
+| Oude AnaBoX 25 / 50 / 100% | |
+| AnaBoX v2.0 25 / 50 / 100% | |
 
 ## Performance Characteristics
 
