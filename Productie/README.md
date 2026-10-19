@@ -375,7 +375,7 @@ HVAC .70  /json  ──►  Dashboard .60 (pollt, om de 5 cycli een POST)  ─�
 
 **Werkwijze:** één stap tegelijk. Elke stap heeft een meetpunt. Pas na expliciete GO naar de volgende stap. Code pas na GO.
 
-### Stap 1 — Geheugen meten met Matter (v1.19) ⏳ *nu bezig*
+### Stap 1 — Geheugen meten met Matter (v1.19) ✅ *runtime gemeten* · ⏳ *opstartmeting volgt*
 
 Geen codewijziging nodig — v1.19 meet dit zelf.
 
@@ -384,13 +384,21 @@ Geen codewijziging nodig — v1.19 meet dit zelf.
 
 | Meting v1.19 (met Matter) | free | largest | min_ever | Datum |
 |---|---|---|---|---|
-| Boot — pre-Matter | | | | |
-| Boot — post-Matter | | | | |
-| Boot — Matter kost | | | — | |
-| Runtime `/json` (`ad` % / `ae` KB) | | | — | |
-| Runtime laagste waarde over 24 u | | | — | |
+| Boot — pre-Matter | | | | *bij de eerstvolgende opstart* |
+| Boot — post-Matter | | | | idem |
+| Boot — Matter kost | | | — | idem |
+| Runtime (`ad` % / `ae` KB) — mediaan | **18 %** | **30 KB** | — | 26 mei – 4 okt 2026 |
+| Runtime — spreiding | 17-18 % | 25-32 KB | — | idem |
+| Runtime — laagste waarde | 17 % | **25 KB** (4×) | — | 27 mei, 14 sep (2×), 30 sep |
 
-*Referentie uit Master §4.5: setup free ~180 KB, largest ~55 KB; runtime largest stabiel > 35 KB.*
+**Bron:** Google Sheet "S-HVAC Log", 1006 rijen van 26 mei tot 4 okt 2026 (HVAC staat sinds 4 okt uit voor de ventilatie-ombouw). Analyse 19 okt 2026.
+
+**Wat dit betekent:**
+- Het grootste vrije blok zit bijna altijd in de zone **"LAAG"** van de eigen kleurcode (25-35 KB) en raakte 4 keer de **crash-log-drempel van 25 KB**. Het Master-document (§4.5) gaf "> 35 KB stabiel" — dat klopt niet (rechtgezet).
+- **3 herstarts** in de periode (10 jul, 12 aug, 11 sep), telkens na 23-30 dagen uptime. Oorzaak onbekend (crash of stroomonderbreking). De crash-log in `/settings` kan het tonen zodra de HVAC weer aan staat.
+- **Logging:** maar 2-45 rijen per dag binnengekomen in plaats van 288 (één per 5 min), en een gat van 29 mei tot 10 jul. De intervallen zijn veelvouden van 5 min: de meeste HTTPS-posts **mislukken** — passend bij een grootste blok van ~30 KB (TLS heeft meer nodig). Welke van de twee (HVAC zelf of het Dashboard) die posts verstuurt, blijkt uit stap 5a.
+
+**Opstartmeting:** de HVAC moet na de hardware-ombouw toch opnieuw aangezet worden. Hang dan een laptop aan de USB-C-poort **"UART"**, Serial Monitor op 115200, en kopieer de drie `[HEAP …]`-regels. Zo krijgen we die gratis.
 
 ### Stap 2 — De RPi neemt Apple Home over (geen sketchwijziging)
 
