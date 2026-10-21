@@ -7,7 +7,7 @@ De centrale controller in de kelder die de **verwarmingskringen**, de **ventilat
 | **Actieve versie** | **v1.19** (18 maart 2026) — `Productie/ESP32C6_MATTER_HVAC.ino` |
 | **Adres** | `http://192.168.0.70` (vast IP, geen mDNS) |
 | **Board** | ESP32-C6 32-pin clone, MAC `58:8C:81:32:2B:90` |
-| **Status** | ✅ Productie stabiel |
+| **Status** | 🧪 **Testopstelling** (nog niet in productie) — kringen met testinstellingen, alle 7 op room80 |
 | **Volgende stap** | Migratie zonder Matter → **v2.0**, daarna Sheets enkel via het Dashboard → **v2.1** (zie [§10](#10-migratie-zonder-matter--v20)) — nu: **stap 1, geheugen meten** |
 | **Systeemdocument** | [Zarlar Master Overnamedocument](https://github.com/FidelDworp/ZarlarApp/blob/main/ESP32_Zarlar/Zarlar_Master_Overnamedocument.md) — §4 gaat over deze controller |
 
@@ -286,7 +286,7 @@ Twee kleine transistors (2N7002, Q1 en Q2) zetten het 3,3V-PWM-signaal om naar e
 | ECO-boiler | IP of mDNS-naam, energiedrempel + hysterese (kWh), start- en stoptemperatuur (°C) |
 | SCH-boiler | referentietemperatuur (°C), volume per laag (l) |
 
-Productienamen van de kringen: BB, WP, BK, ZP, EP, KK, IK.
+Nu staan er **testinstellingen** ("Een"-"Zeven", 1-7 kW, alle kringen op room80). Bij ingebruikname in productie: namen BB, WP, BK, ZP, EP, KK, IK, het echte vermogen en per kring de juiste room controller.
 
 Opslaan → de controller herstart. Instellingen blijven bewaard bij een update.
 
@@ -375,7 +375,7 @@ HVAC .70  /json  ──►  Dashboard .60 (pollt, om de 5 cycli een POST)  ─�
 
 **Werkwijze:** één stap tegelijk. Elke stap heeft een meetpunt. Pas na expliciete GO naar de volgende stap. Code pas na GO.
 
-### Stap 1 — Geheugen meten met Matter (v1.19) ✅ *runtime gemeten* · ⏳ *opstartmeting volgt*
+### Stap 1 — Geheugen meten met Matter (v1.19) ✅ *afgerond 19 okt 2026*
 
 Geen codewijziging nodig — v1.19 meet dit zelf.
 
@@ -384,9 +384,9 @@ Geen codewijziging nodig — v1.19 meet dit zelf.
 
 | Meting v1.19 (met Matter) | free | largest | min_ever | Datum |
 |---|---|---|---|---|
-| Boot — pre-Matter | | | | *bij de eerstvolgende opstart* |
-| Boot — post-Matter | | | | idem |
-| Boot — Matter kost | | | — | idem |
+| Boot — pre-Matter | 142 232 B (139 KB) | 126 964 B (124 KB) | 142 204 B | 19 okt 2026 |
+| Boot — post-Matter | 79 400 B (78 KB) | 63 476 B (62 KB) | 76 636 B | 19 okt 2026 |
+| **Boot — Matter kost** | **−62 832 B (−61 KB)** | **−63 488 B (−62 KB)** | — | 19 okt 2026 |
 | Runtime (`ad` % / `ae` KB) — mediaan | **18 %** | **30 KB** | — | 26 mei – 4 okt 2026 |
 | Runtime — spreiding | 17-18 % | 25-32 KB | — | idem |
 | Runtime — laagste waarde | 17 % | **25 KB** (4×) | — | 27 mei, 14 sep (2×), 30 sep |
@@ -398,22 +398,34 @@ Geen codewijziging nodig — v1.19 meet dit zelf.
 - **3 herstarts** in de periode (10 jul, 12 aug, 11 sep), telkens na 23-30 dagen uptime. Oorzaak onbekend (crash of stroomonderbreking). De crash-log in `/settings` kan het tonen zodra de HVAC weer aan staat.
 - **Logging:** maar 2-45 rijen per dag binnengekomen in plaats van 288 (één per 5 min), en een gat van 29 mei tot 10 jul. De intervallen zijn veelvouden van 5 min: de meeste HTTPS-posts **mislukken** — passend bij een grootste blok van ~30 KB (TLS heeft meer nodig). Welke van de twee (HVAC zelf of het Dashboard) die posts verstuurt, blijkt uit stap 5a.
 
-**Opstartmeting:** de HVAC moet na de hardware-ombouw toch opnieuw aangezet worden. Hang dan een laptop aan de USB-C-poort **"UART"**, Serial Monitor op 115200, en kopieer de drie `[HEAP …]`-regels. Zo krijgen we die gratis.
+**Opstartmeting (19 okt 2026, na de hardware-ombouw):** Matter neemt bij het opstarten **61 KB** vrij geheugen en halveert het grootste vrije blok (124 → 62 KB). Tijdens het draaien zakt dat blok verder tot ~30 KB. **Verwachting v2.0:** grootste blok tijdens het draaien ruim boven 35 KB (zone "OK").
+
+**Ook gezien in de opstartlog (19 okt 2026):**
+- **Crash-log #3: "heap 23 KB @ 120 s"** — de vorige run zakte 2 minuten na de start al onder de drempel van 25 KB.
+- **Kringinstellingen = testopstelling (bewust, bevestigd door FiDel):** c1-c7 "Een"-"Zeven", 1-7 kW, alle kringen pollen room80. De Sheet bevestigt dit ("HeatDem 28 kW" = 1+2+…+7). Voor de heap-meting maakt dat niet uit: 7 polls per cyclus, net als in productie.
+- **NTP-tijd: TIMEOUT** — de klok synchroniseert niet. Zie §11.
+- **WiFi-signaal:** −79 dBm bij de start, −71 dBm daarna — zwak, maar normaal voor de testopstelling op de grond.
+- Matter-meldingen `chip[DMG] … Cluster 0x0000_0031 not found` en `mdns_service_remove_for_host … Service doesn't exist` — onschuldig, verdwijnen normaal met v2.0.
+- `esp_core_dump_flash: No core dump partition found!` — onschuldig: de partitietabel heeft bewust geen core-dump-partitie.
 
 ### Stap 2 — De RPi neemt Apple Home over (geen sketchwijziging)
 
-`server.js` en de plugin `matterbridge-zarlar` op de RPi bieden de HVAC aan, zoals al gebeurde voor room80 (Portal Plan §16.11).
+`server.js` en de plugin `matterbridge-zarlar` op de RPi bieden de HVAC aan als **één gecombineerd toestel "HVAC"** in de woning Zarlardinge, zoals room80. **Volledig plan: Portal Plan §16.12** (19 okt 2026).
 
-| Nu op de ESP32 (Matter) | Straks via de RPi-bridge |
-|---|---|
-| Boiler boven (temperatuur) | temperatuursensor |
-| Kring 1-7 (aan/uit) | schakelaar (als *stopcontact*, niet als lamp — "alle lampen uit" mag de verwarming niet raken) |
-| Ventilatie (%) | ventilator; % → `/set_vent` (minimum, vervalt na 3 u) |
+> De drie Photon-knoppen van S-HVAC (*ECO => SCHUUR*, *ECO => WONING*, *HVAC Home* → hernoemd naar "HOME") blijven: de **Photon S-HVAC stuurt nog de echte verwarming**.
+
+| Onderdeel van "HVAC" | Uit `/json` | Klikken |
+|---|---|---|
+| Boiler boven / gem. / onder (temperatuur) | `b`, `h`, `g` | — |
+| Kring 1-7 (als *stopcontact*, niet als lamp — "alle lampen uit" mag de verwarming niet raken) | `p`-`v` | override 10 min |
+| Ventilatie (%) | `x` | `/set_vent` (minimum 3 u), 0 = automatisch |
+| ECO => SCHUUR / ECO => WONING (nieuw t.o.v. de ESP32-Matter) | `y`, `aa` | 60 s geforceerd aan, daarna vanzelf uit |
 
 | Fase | Wat | Meetpunt |
 |---|---|---|
-| **H-F4** | HVAC-tegels via de bridge in de woning "Zarlardinge" | Waarden en schakelen identiek aan de webpagina |
-| **H-F5** | Parallelle test: oude Matter-tegels van de ESP32 naast de nieuwe van de RPi | Duur beslist FiDel; alles werkt via de bridge |
+| **H1** | `server.js` v2.10: vertaling naar de GET-endpoints van de HVAC + kringnamen | Test met `curl` vanaf de Mac: relais schakelen, `/json` volgt |
+| **H2** | Plugin v0.7: toestel "HVAC" in "Zarlardinge" | Elke tegel getest; waarden identiek aan de webpagina |
+| **H3** | Parallelle test: oude Matter-tegels van de ESP32 ("Matter Home") naast de nieuwe van de RPi | Duur beslist FiDel; alles werkt via de bridge |
 
 ### Stap 3 — v2.0: alleen Matter weghalen
 
@@ -476,6 +488,9 @@ Daarna in het Master-document: §4.4 (Matter) laten vervallen, §4.5 nieuwe heap
 | # | Wat | Wanneer |
 |---|---|---|
 | 1 | **Matter-migratie** | §10, nu bezig |
+| 1b | **Bij ingebruikname in productie:** testinstellingen in `/settings` vervangen (namen BB, WP, BK, ZP, EP, KK, IK, echt vermogen, juiste room controller per kring). Geen codewijziging | bij overgang naar productie |
+| 1c | **NTP-timeout** bij het opstarten: tijd synchroniseert niet. Mogelijke oorzaak: met vast IP wordt de router (192.168.0.1) als DNS gebruikt. Eerst nakijken of dit blijft na een herstart | na v2.0 |
+| 1d | **WiFi-signaal** opnieuw meten op de definitieve plaats (testopstelling op de grond: −71 tot −79 dBm) | bij overgang naar productie |
 | 2 | **Meting klem 7-8** en overstap van de Photon naar AnaBoX v2.0 | §6.4, vóór v2.5 |
 | 3 | **kWh per pompbeurt** echt berekenen (Q = m × Cp × ΔT) i.p.v. vaste 0,5 kWh | na v2.0 |
 | 4 | **Witte pagina op de iPhone** bij de ventilatieslider (vermoedelijk geheugenkrapte bij herladen) | herbekijken na v2.0 — misschien opgelost door de heap-winst |
