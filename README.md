@@ -367,7 +367,7 @@ HVAC .70  /json  ──►  Dashboard .60 (pollt, om de 5 cycli een POST)  ─�
 
 ## 10. Migratie zonder Matter — v2.0
 
-*Plan van 18 okt 2026, naar het voorbeeld van ROOM v3.0 (Master §7.9 en §16, Portal Plan §16).*
+*Plan van 18 okt 2026, bijgewerkt 21 okt 2026 (stap 1 afgerond, stap 2: H1 + H2 klaar), naar het voorbeeld van ROOM v3.0 (Master §7.9 en §16, Portal Plan §16).*
 
 **Waarom:** Matter kost veel werkgeheugen (volgens Master §16: 80-120 KB per controller) en maakt de sketch ingewikkeld. Apple Home zal voortaan enkel nog praten met de **Raspberry Pi** (`192.168.0.50`), die via een Matter-bridge de HVAC aanbiedt.
 
@@ -547,4 +547,4 @@ Volledige details staan in de versieheader bovenaan de sketch.
 
 ---
 
-*Zarlar thuisautomatisering — Filip Delannoy — bijgewerkt 18 oktober 2026*
+*Zarlar thuisautomatisering — Filip Delannoy — bijgewerkt 21 oktober 2026*
