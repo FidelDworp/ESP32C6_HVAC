@@ -96,10 +96,10 @@ De controller is bewust "dom": de slimheid (setpoints, aanwezigheid) zit in de r
 | `Productie/ESP32C6_MATTER_HVAC.ino` | **Actieve sketch v1.19** |
 | `Productie/partitions.csv` | Geheugenindeling van de flash (16 MB, 2 × 6 MB app voor OTA). Moet naast het `.ino`-bestand staan. |
 | `Productie/HVAC_GoogleScript.gs` | Google Apps Script v5: ontvangt de HVAC-data (via het Dashboard) en schrijft ze in een Google Sheet |
-| `ESP32_HVAC_Old-NoMatter.ino` | Oude ESP32-versie zonder Matter (januari 2026, V53.x). **Alleen ter referentie** — niet de basis voor v2.0 |
-| `HVAC_Photon.cpp` | De oorspronkelijke Particle Photon-sketch, vóór de overstap naar ESP32 |
-| `HVAC_GoogleScript_OLD.gs` | Oud Apps Script (lange JSON-sleutels) — niet meer compatibel |
-| `CHECKLIST` | Oude werklijst |
+| `Old/Old HVAC_Photon.cpp` | De Particle Photon-sketch. ⚠️ **Draait nog in productie** op de Photon S-HVAC, die vandaag de echte verwarming stuurt |
+| `Old/Old ESP32_HVAC-NoMatter.ino` | Oude ESP32-versie zonder Matter (januari 2026, V53.x). **Alleen ter referentie** — niet de basis voor v2.0 |
+| `Old/Old HVAC_GoogleScript.gs` | Oud Apps Script (lange JSON-sleutels) — niet meer compatibel |
+| `Old/CHECKLIST` | Oude werklijst |
 
 ---
 
@@ -371,7 +371,7 @@ HVAC .70  /json  ──►  Dashboard .60 (pollt, om de 5 cycli een POST)  ─�
 
 **Waarom:** Matter kost veel werkgeheugen (volgens Master §16: 80-120 KB per controller) en maakt de sketch ingewikkeld. Apple Home zal voortaan enkel nog praten met de **Raspberry Pi** (`192.168.0.50`), die via een Matter-bridge de HVAC aanbiedt.
 
-**Vertrekpunt:** `ESP32C6_MATTER_HVAC.ino` **v1.19**, niet de oude `ESP32_HVAC_Old-NoMatter.ino`. Na januari kwamen 19 versies met verbeteringen die niets met Matter te maken hebben (heap, duty-cyclus, TSTAT, JSON-keys). Matter zit op afgebakende plaatsen en is gericht te verwijderen.
+**Vertrekpunt:** `ESP32C6_MATTER_HVAC.ino` **v1.19**, niet de oude `Old/Old ESP32_HVAC-NoMatter.ino`. Na januari kwamen 19 versies met verbeteringen die niets met Matter te maken hebben (heap, duty-cyclus, TSTAT, JSON-keys). Matter zit op afgebakende plaatsen en is gericht te verwijderen.
 
 **Werkwijze:** één stap tegelijk. Elke stap heeft een meetpunt. Pas na expliciete GO naar de volgende stap. Code pas na GO.
 
@@ -541,7 +541,7 @@ Daarna in het Master-document: §4.4 (Matter) laten vervallen, §4.5 nieuwe heap
 | v1.3-v1.6 | 1-3 mrt | Matter toegevoegd, `/matter`-pagina |
 | v1.2 | 26 feb | Vast IP 192.168.0.70 |
 | v1.1 | 10 jan | UI- en JSON-verbeteringen |
-| V53.x | jan 2026 | Eerste ESP32-versie zonder Matter (nu `ESP32_HVAC_Old-NoMatter.ino`) |
+| V53.x | jan 2026 | Eerste ESP32-versie zonder Matter (nu `Old/Old ESP32_HVAC-NoMatter.ino`) |
 
 Volledige details staan in de versieheader bovenaan de sketch.
 
