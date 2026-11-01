@@ -4,11 +4,11 @@ De centrale controller in de kelder die de **verwarmingskringen**, de **ventilat
 
 | | |
 |---|---|
-| **Actieve versie** | **v1.19** (18 maart 2026) — `Productie/ESP32C6_MATTER_HVAC.ino` |
+| **Actieve versie** | **v2.0** (1 november 2026) — `Productie/ESP32C6_HVAC.ino`, zonder Matter |
 | **Adres** | `http://192.168.0.70` (vast IP, geen mDNS) |
 | **Board** | ESP32-C6 32-pin clone, MAC `58:8C:81:32:2B:90` |
 | **Status** | 🧪 **Testopstelling** (nog niet in productie) — kringen met testinstellingen, alle 7 op room80 |
-| **Volgende stap** | Migratie zonder Matter → **v2.0**, daarna Sheets enkel via het Dashboard → **v2.1** (zie [§10](#10-migratie-zonder-matter--v20)) — nu: **stap 1, geheugen meten** |
+| **Volgende stap** | v2.0 uploaden en testen (48 u, geheugen meten — §10 stap 4), daarna Sheets enkel via het Dashboard → **v2.1** |
 | **Systeemdocument** | [Zarlar Master Overnamedocument](https://github.com/FidelDworp/ZarlarApp/blob/main/ESP32_Zarlar/Zarlar_Master_Overnamedocument.md) — §4 gaat over deze controller |
 
 > **Leeswijzer.** §1 en §2 zijn voor wie het systeem leert kennen. §3 t.e.m. §9 beschrijven wat er nu draait. §10 en §11 beschrijven wat er nog moet gebeuren. Bij twijfel is **de sketch de waarheid**, niet dit document.
@@ -49,7 +49,7 @@ In elke kamer hangt een **room controller** (een eigen ESP32). Die weet hoe warm
                 └──────────────────────┘──► PWM → AnaBoX → ventilatie-unit
                            │
                            ▼
-          webpagina · /json · Apple Home (Matter)
+          webpagina · /json · Apple Home (via de RPi-bridge)
                            │
                            ▼  (Zarlar Dashboard .60 haalt /json op)
                      Google Sheets
@@ -58,7 +58,7 @@ In elke kamer hangt een **room controller** (een eigen ESP32). Die weet hoe warm
 Drie taken:
 
 1. **Verwarming** — 7 kringen (vloerverwarming/radiatoren per zone). Per kring één relais. Een kring gaat aan als de kamer erom vraagt, of als een gewone muurthermostaat (TSTAT) erom vraagt.
-2. **Ventilatie** — elke kamer vraagt een percentage; de hoogste vraag wint. Dat percentage gaat via een PWM-signaal naar de ventilatie-unit.
+2. **Ventilatie** — elke kamer vraagt een percentage; de hoogste vraag wint. Dat percentage gaat via een PWM-signaal en de AnaBoX als 0,2-10 V naar de ventilatie-unit.
 3. **ECO-pompen** — als de ECO-boiler (zonne-/restwarmte) vol en heet genoeg is, pompt de controller die warmte beurtelings naar de **schuur (SCH)** en de **woning (WON)**.
 
 De controller is bewust "dom": de slimheid (setpoints, aanwezigheid) zit in de room controllers. Valt een kamer weg, dan blijft de rest werken.
@@ -83,7 +83,7 @@ De controller is bewust "dom": de slimheid (setpoints, aanwezigheid) zit in de r
 | **NVS** | Klein geheugen in de ESP32 dat instellingen bewaart na een herstart of update. |
 | **Heap** | Het werkgeheugen (RAM) tijdens het draaien. Raakt het op of versnipperd, dan crasht de ESP32. "Largest block" = grootste stuk vrij geheugen in één geheel. |
 | **OTA** | "Over the air": nieuwe sketch uploaden via WiFi in plaats van via een kabel. |
-| **Matter** | Standaard om toestellen in Apple Home te tonen. Kost veel heap; verhuist naar de Raspberry Pi (§10). |
+| **Matter** | Standaard om toestellen in Apple Home te tonen. Draait sinds v2.0 enkel nog op de Raspberry Pi (bridge), niet meer op de ESP32 (§10). |
 | **SCH / WON** | Schuur / Woning — de twee kanten die warmte uit de ECO-boiler krijgen. |
 
 ---
@@ -93,7 +93,7 @@ De controller is bewust "dom": de slimheid (setpoints, aanwezigheid) zit in de r
 | Bestand | Wat |
 |---|---|
 | `README.md` | Dit document (in de root, zodat GitHub het op de voorpagina van de repo toont) |
-| `Productie/ESP32C6_MATTER_HVAC.ino` | **Actieve sketch v1.19** |
+| `Productie/ESP32C6_HVAC.ino` | **Actieve sketch v2.0** (zonder Matter) |
 | `Productie/partitions.csv` | Geheugenindeling van de flash (16 MB, 2 × 6 MB app voor OTA). Moet naast het `.ino`-bestand staan. |
 | `Productie/HVAC_GoogleScript.gs` | Google Apps Script v5: ontvangt de HVAC-data (via het Dashboard) en schrijft ze in een Google Sheet |
 | `Old/Old HVAC_Photon.cpp` | De Particle Photon-sketch. ⚠️ **Draait nog in productie** op de Photon S-HVAC, die vandaag de echte verwarming stuurt |
@@ -112,7 +112,7 @@ De controller is bewust "dom": de slimheid (setpoints, aanwezigheid) zit in de r
 | IO3 | `ONE_WIRE_PIN` | DS18B20 OneWire — 6 sensoren in de SCH-boiler |
 | IO13 | `I2C_SDA` | I2C data → MCP23017 |
 | IO11 | `I2C_SCL` | I2C klok → MCP23017 |
-| IO20 | `VENT_FAN_PIN` | PWM ventilatie (1 kHz, 8-bit) → AnaBoX → 0-10V |
+| IO20 | `VENT_FAN_PIN` | PWM ventilatie (5 kHz, 8-bit) → AnaBoX → 0-10V |
 
 Alle andere pinnen zijn vrij. **Nooit IO8 of IO9 als ingang gebruiken** (strapping pins: ze bepalen hoe de chip opstart).
 
@@ -164,8 +164,11 @@ Per kring houdt de controller bij hoe lang hij aan stond: een **duty-cyclus over
 
 ```
 effectief % = max( hoogste vraag van alle kamers , override via webslider )
-PWM         = effectief % × 255 / 100   → IO20
+spanning    = 0,2 V + effectief % × 9,8 V / 100      (minstens 0,3 V)
+PWM         = ventPwm(effectief %)  → IO20            (correctie voor de AnaBoX, §6.4)
 ```
+
+⚠️ **0 % is de laagste stand, niet "uit".** Onder 0,2 V draait de Begetube op volle kracht (§6.2). Echt uitschakelen kan enkel met klem 5-6 (§11, punt 6).
 
 De override via de slider op de webpagina werkt als **minimum** en vervalt na **3 uur**. Slider op 0 = automatisch.
 
@@ -200,7 +203,7 @@ Als er minstens één kring aan staat, hoort de circulatiepomp te draaien (MCP 7
 
 De ESP32-C6 heeft **geen echte analoge uitgang** (geen DAC). IO20 geeft enkel een PWM-signaal van 3,3 V. De ventilatie-unit verwacht een gelijkspanning van 0-10 V. Daartussen zit dus een omzetter: de **AnaBoX**.
 
-**Huidige toestand:** de unit wordt nog aangestuurd door een **Particle Photon met de oude AnaBoX** (met op-amp). Doel: overschakelen naar de HVAC-controller met de **AnaBoX v2.0**.
+**Huidige toestand:** de unit wordt nog aangestuurd door een **Particle Photon met de oude AnaBoX** (met op-amp). Doel: overschakelen naar de HVAC-controller met de **AnaBoX v2.0**. De AnaBoX v2.0 is getest met de `ESP32_PWM_Test`-sketch op de Begetube in de kelder (1/11/2026): werkt.
 
 ### 6.2 Aansluitingen op de unit (groene 8-polige stekker)
 
@@ -214,46 +217,47 @@ Bron: gebruikershandleiding + mail van de technische dienst. Alle contacten zijn
 | **5-6** | **PIR/timer-contact** | Gesloten = unit volgt de 0-10V; open = unit schakelt uit. Standaard een brugje |
 | **7-8** | **0-10V-ingang** | Tekening: rood = 7 (+), blauw = 8 (−). **Eerst nameten** vóór je aansluit |
 
-**Nog onbekend** (de technische dienst wist het niet): de ingangsweerstand van klem 7-8, wat de unit doet bij 0 V (stoppen of minimumtoerental), en of er een interne pull-up is. Daarvoor dient de meting in §6.4.
+**Gemeten (1/11/2026):**
+- **0,2-10 V = 0-100 %, lineair.** **Onder 0,2 V (ook 0 V of een losse draad) draait de unit op volle kracht.**
+- Ingangsweerstand ±**200 kΩ** (0,05 mA bij 10 V). Geen interne pull-up (open: −0,12 V).
 
 ### 6.3 AnaBoX v2.0 (eigen ontwerp, iTroniX)
 
 Twee kleine transistors (2N7002, Q1 en Q2) zetten het 3,3V-PWM-signaal om naar een PWM van 0 tot VCC. Een RC-filter (R4 = 10 kΩ, C1 = 1 µF) maakt daar een vloeiende gelijkspanning van.
 
 - **Aansluiten:** PWM-IN ← IO20 + GND · ANA-OUT pin 1 → klem 7, GND → klem 8
-- **Veilig bij uitval:** geen PWM-signaal → uitgang 0 V → ventilator op minimum/uit
+- **Bij uitval** (geen PWM, controller uit, draad los): uitgang 0 V → ventilator op **volle kracht**. Voor ventilatie een veilige terugval
 - **Aandachtspunten:**
-  1. **VCC moet exact 10 V zijn** en stabiel: de uitgangsspanning is gelijk aan VCC.
-  2. De AnaBoX v2.0 heeft **geen buffer** (de oude wel). Is de ingang van de unit laagohmig, dan zakt de spanning. Eerste oplossing: **R3 (1 kΩ) bestukken** (de plaats is voorzien op de print).
-  3. Een **pulldown van ~100 kΩ op de gate van Q1** voorkomt dat de ventilator kort aanslaat tijdens het opstarten van de ESP32.
+  1. **VCC moet exact 10 V zijn** en stabiel: de uitgangsspanning schaalt mee met VCC.
+     **Voeding AnaBoX:** 5 V van de controller → klein step-up-printje → **10,0 V** op Vin (geen aparte voeding nodig). Stel de 10 V in met de multimeter vóór je de AnaBoX aansluit, controleer na een uur draaien en zet het potje vast. De AnaBoX zelf trekt maar enkele mA. Op de HVAC-controller (Velleman PSSE510, 5 V / 1 A, 10 relais achter de 5V-PTC): de step-up aansluiten **vóór de 5V-PTC** (voedingskant), zodat schakelende relais geen dips op de 10 V geven.
+  2. De AnaBoX v2.0 heeft **geen buffer** (de oude wel). Met de Begetube (200 kΩ) zakt de spanning maar ±6 %: **R3 is niet nodig**.
+  3. Tijdens het opstarten van de ESP32 is de uitgang even 0 V (= volle kracht) tot `setup()` de laagste stand schrijft.
   4. C1 minstens 25 V (X7R). ESP32 en unit delen dezelfde GND.
-  5. **PWM-frequentie:** nu 1 kHz → ~0,25 V rimpel. Beter **~20 kHz** (rimpel ~12 mV). Wordt aangepast in v2.5 (§10).
+  5. **PWM-frequentie:** de gelijkspanning is gelijk bij 1, 5 en 20 kHz. Rimpel: 0,18 / 0,03 / 0,01 V. Sinds v2.0 **5 kHz** (rimpel ≈ één PWM-stap).
 
-### 6.4 Meting: ingangsweerstand van klem 7-8 (unit in bedrijf)
+### 6.4 Metingen AnaBoX v2.0 en correctie in de sketch
 
-1. **Open spanning:** draad van klem 7 los, unit aan, spanning meten over 7-8. Is er spanning, dan heeft de unit een interne pull-up.
-2. **Met een serieweerstand** (oude AnaBoX op 100%):
-   - spanning op 7-8 meten → **V1**
-   - 10 kΩ in serie tussen AnaBoX en klem 7, opnieuw meten → **V2**
-   - **R<sub>in</sub> = 10 kΩ × V2 / (V1 − V2)** (voorbeeld: V1 = 10,0 V en V2 = 9,1 V → ~100 kΩ)
-3. **Vergelijken:** oude en nieuwe AnaBoX bij 25 / 50 / 100%, met de unit aangesloten.
+Vin = 10 V, zonder R3, multimeter (31/10 en 1/11/2026):
 
-| R<sub>in</sub> | Wat betekent dat voor de AnaBoX v2.0? |
-|---|---|
-| ≥ 100 kΩ | Werkt zoals hij is; R3 bestukken maakt het nog beter |
-| 10-50 kΩ | R3 (1 kΩ) zeker bestukken; R4 → 1 kΩ en C1 → 10 µF |
-| < 10 kΩ | Een buffer (op-amp) is nodig, zoals in de oude AnaBoX |
+| PWM | Onbelast | Met Begetube |
+|---|---|---|
+| 0 | 0,00 V | 0,00 V (= volle kracht!) |
+| 64 | 1,43 V | 1,36 V |
+| 128 | 3,34 V | 3,14 V |
+| 191 | 5,97 V | 5,53 V |
+| 255 | 9,97 V | ≈ 9,3 V (berekend) |
 
-**Meetresultaten** *(in te vullen)*
+De AnaBoX is **niet lineair**: `U = Vmax · D / (D + k·(1 − D))`, met D = duty (0-1), **k ≈ 2** en **Vmax ≈ 9,3 V** met de unit aangesloten. De sketch rekent omgekeerd (`ventPwm()`): `u = U / Vmax` → `D = k·u / (1 + (k − 1)·u)`. Dat voorspelt de metingen tot op 0,04 V.
 
-| Meting | Waarde |
-|---|---|
-| Open spanning 7-8 | |
-| V1 (oude AnaBoX, 100%) | |
-| V2 (met 10 kΩ in serie) | |
-| R<sub>in</sub> berekend | |
-| Oude AnaBoX 25 / 50 / 100% | |
-| AnaBoX v2.0 25 / 50 / 100% | |
+| Ventilatie | Spanning | PWM |
+|---|---|---|
+| 0 % (laagste stand) | 0,30 V | 16 |
+| 25 % | 2,65 V | 113 |
+| 50 % | 5,12 V | 181 |
+| 75 % | 7,58 V | 229 |
+| 100 % | 9,3 V (max. haalbaar ≈ 93 %) | 255 |
+
+Constanten bovenaan de sketch: `VENT_VMAX`, `VENT_K`, `VENT_U_MIN_VEILIG`, `VENT_PWM_FREQ`. Meet bij de overstap de spanning op klem 7-8 bij 100 % en pas `VENT_VMAX` aan als die afwijkt.
 
 ---
 
@@ -275,7 +279,6 @@ Twee kleine transistors (2N7002, Q1 en Q2) zetten het 3,3V-PWM-signaal om naar e
 | `/pump_sch_on`, `_off`, `_cancel` · `/pump_won_…` | Pomp handmatig (60 s) |
 | `/set_vent?vent=0..100` | Ventilatie-minimum (3 u); 0 = automatisch |
 | `/clear_crash_log` | Crash-teller wissen |
-| `/matter`, `/matter_reset` | Matter-koppeling — **verdwijnt in v2.0** |
 
 ### 7.2 Instellingen (`/settings`, bewaard in NVS namespace `hvac-config`)
 
@@ -297,7 +300,6 @@ Opslaan → de controller herstart. Instellingen blijven bewaard bij een update.
 | `R` binnen 5 s na het opstarten | Alle instellingen wissen (factory reset) |
 | `status` | Overzicht van alle kringen en de ventilatie |
 | `reset-all` | Volledige NVS wissen + herstart |
-| `reset-matter` | Enkel de Matter-koppeling wissen — **verdwijnt in v2.0** |
 
 > Door `#define Serial Serial0` verschijnt de output op de USB-C-poort **"UART"** van het board, niet op de poort "USB".
 
@@ -354,7 +356,7 @@ HVAC .70  /json  ──►  Dashboard .60 (pollt, om de 5 cycli een POST)  ─�
 
 | Wat | Hoe |
 |---|---|
-| Opstarten | Alle relais UIT vóór WiFi start; ventilatie op 0% |
+| Opstarten | Alle relais UIT vóór WiFi start; ventilatie op de laagste stand (0,3 V), niet 0 V |
 | Overrides | Vervallen vanzelf: kring 10 min, pomp 60 s, ventilatie 3 u |
 | ECO-pompen | Nooit twee tegelijk; stoppen als de ECO-boiler offline is |
 | Kamer offline | Kring valt terug op de TSTAT |
@@ -427,11 +429,13 @@ Geen codewijziging nodig — v1.19 meet dit zelf.
 | **H2** ✅ | Plugin v0.7: toestel "HVAC" in "Zarlardinge" | 21/10: 13 onderdelen verschenen en hernoemd; ⏳ elke tegel één keer schakelen |
 | **H3** | Parallelle test: oude Matter-tegels van de ESP32 ("Matter Home") naast de nieuwe van de RPi | Duur beslist FiDel; alles werkt via de bridge |
 
-### Stap 3 — v2.0: alleen Matter weghalen
+### Stap 3 — v2.0: Matter weghalen + ventilatie ✅ *sketch klaar 1 nov 2026* · ⏳ *uploaden en testen*
 
 **Weg:** de Matter-`#include`'s · de 9 endpoints · de callbacks · `update_matter_sensors()` en de 5 s-update in `loop()` · `matterNuclearReset()` en de bijhorende vlag · de pagina's `/matter` en `/matter_reset` en de menulinks ernaar · serial `reset-matter` · `setOnOff()` in de kring-handlers en in `checkTstatPins()` · de pairing-wachtlus (max. 5 min) in `setup()`.
 
-**Blijft:** de ventilatie-override via de webslider, `total_power`, alle relais-, pomp- en poll-logica, en de Sheets-push (die verdwijnt pas in v2.1). Serial `reset-all` blijft (enkel de tekst "+ Matter" vervalt). **Verder niets wijzigen.**
+**Blijft:** de ventilatie-override via de webslider, `total_power`, alle relais-, pomp- en poll-logica, en de Sheets-push (die verdwijnt pas in v2.1). Serial `reset-all` blijft (enkel de tekst "+ Matter" vervalt).
+
+**Ook in v2.0 (beslist 1/11/2026, i.p.v. de geplande v2.5):** de ventilatie volgens §5.2 en §6.4 — `ventPwm()` met correctie, laagste stand 0,3 V (ook bij het opstarten), 5 kHz.
 
 **In dezelfde commit:**
 - bestandsnaam → `ESP32C6_HVAC.ino` (op de Mac ook de schetsmap hernoemen — Arduino IDE eist dat map en bestand dezelfde naam hebben)
@@ -439,7 +443,7 @@ Geen codewijziging nodig — v1.19 meet dit zelf.
 
 **Daarna:** het oude HVAC-accessoire uit Apple Home verwijderen en scènes/automaties koppelen aan de bridge-tegels.
 
-**Meetpunt:** 48 u zonder herstart · relais reageren meteen via de webpagina en via de bridge.
+**Meetpunt:** 48 u zonder herstart · relais reageren meteen via de webpagina en via de bridge · Serial `Vent PWM: 16/255 ≈ 0,30 V (0% …)` zonder ventilatievraag.
 
 ### Stap 4 — Geheugen meten zonder Matter (v2.0)
 
@@ -478,7 +482,7 @@ Daarna in het Master-document: §4.4 (Matter) laten vervallen, §4.5 nieuwe heap
 | v2.2 | `#define Serial Serial0` beslissen: poort "UART" of "USB" (Master §3.9) | Serial zichtbaar op de gekozen poort |
 | v2.3 | mDNS terug (`hvac.local`), enkel als WiFi verbonden is met een geldig IP (Master §3.14) | `http://hvac.local` werkt; `.70` blijft werken |
 | v2.4 | Geen polling/sensoren in AP-mode (Master §3.14) — eerst nakijken of dat al zo is | `/settings` blijft vlot in AP-mode |
-| v2.5 | Ventilatie-PWM 1 kHz → ~20 kHz, samen met de overstap naar de AnaBoX v2.0 (§6) | Spanning op klem 7-8 gelijk aan de oude AnaBoX bij 25/50/100% |
+| ~~v2.5~~ | Ventilatie — **zit al in v2.0** | — |
 | v2.6 | **Firmwareversie zichtbaar** onderaan de hoofdpagina (en in `/settings`), enkel bij het laden van de pagina — **niet** in `/json` (geen nieuwe key). Eén `#define HVAC_VERSION` bovenaan, gebruikt in de webpagina én de opstarttekst, zodat ze nooit meer uit elkaar lopen (v1.19 toont bij het opstarten nog "v1.10") | Versie leesbaar op `http://192.168.0.70/` |
 
 ---
@@ -487,11 +491,11 @@ Daarna in het Master-document: §4.4 (Matter) laten vervallen, §4.5 nieuwe heap
 
 | # | Wat | Wanneer |
 |---|---|---|
-| 1 | **Matter-migratie** | §10, nu bezig |
+| 1 | **Matter-migratie** — v2.0 klaar, nog uploaden en testen | §10 stap 3-4 |
 | 1b | **Bij ingebruikname in productie:** testinstellingen in `/settings` vervangen (namen BB, WP, BK, ZP, EP, KK, IK, echt vermogen, juiste room controller per kring). Geen codewijziging | bij overgang naar productie |
 | 1c | **NTP-timeout** bij het opstarten: tijd synchroniseert niet. Mogelijke oorzaak: met vast IP wordt de router (192.168.0.1) als DNS gebruikt. Eerst nakijken of dit blijft na een herstart | na v2.0 |
 | 1d | **WiFi-signaal** opnieuw meten op de definitieve plaats (testopstelling op de grond: −71 tot −79 dBm) | bij overgang naar productie |
-| 2 | **Meting klem 7-8** en overstap van de Photon naar AnaBoX v2.0 | §6.4, vóór v2.5 |
+| 2 | **Overstap van de Photon naar de AnaBoX v2.0** (metingen klaar, §6.4): spanning bij 100 % meten en `VENT_VMAX` nakijken | na v2.0 |
 | 3 | **kWh per pompbeurt** echt berekenen (Q = m × Cp × ΔT) i.p.v. vaste 0,5 kWh | na v2.0 |
 | 4 | **Witte pagina op de iPhone** bij de ventilatieslider (vermoedelijk geheugenkrapte bij herladen) | herbekijken na v2.0 — misschien opgelost door de heap-winst |
 | 5 | **Google Sheets enkel via het Dashboard** — beslist; instellingen nakijken (5a) en daarna de eigen push uit de sketch halen (v2.1). Zelfde regel voor ROOM, ECO en S-ENERGY | §10 stap 5 |
@@ -512,7 +516,7 @@ Daarna in het Master-document: §4.4 (Matter) laten vervallen, §4.5 nieuwe heap
 | USB CDC On Boot | Enabled |
 | Core Debug Level | None (spaart 20-30 KB heap) |
 
-**Libraries:** `OneWireNg`, `Adafruit MCP23017 Arduino Library` (`Adafruit_MCP23X17`), `AsyncTCP` + `ESPAsyncWebServer`, `ArduinoJson` (v7), en uit de ESP32-core: `WiFi`, `HTTPClient`, `Preferences`, `Update`, `DNSServer`, `Matter` (tot v2.0).
+**Libraries:** `OneWireNg`, `Adafruit MCP23017 Arduino Library` (`Adafruit_MCP23X17`), `AsyncTCP` + `ESPAsyncWebServer`, `ArduinoJson` (v7), en uit de ESP32-core: `WiFi`, `HTTPClient`, `Preferences`, `Update`, `DNSServer`.
 
 **Uploaden:**
 - **Eerste keer:** via USB-kabel.
@@ -525,7 +529,8 @@ Daarna in het Master-document: §4.4 (Matter) laten vervallen, §4.5 nieuwe heap
 
 | Versie | Datum | Wat |
 |---|---|---|
-| **v1.19** | 18 mrt 2026 | Matter: relais schakelen meteen vanuit Apple Home |
+| **v2.0** | 1 nov 2026 | Zonder Matter (bestand `ESP32C6_HVAC.ino`); ventilatie met correctie voor AnaBoX v2.0, laagste stand 0,3 V, 5 kHz |
+| v1.19 | 18 mrt 2026 | Matter: relais schakelen meteen vanuit Apple Home |
 | v1.18 | 17 mrt | ECO-keys aangepast aan de nieuwe ECO-sketch (`b`, `g`, `h`, `i`) |
 | v1.17 | 17 mrt | Room-keys aangepast aan de nieuwe room-sketch (`b`, `g`, `c`, `e`, `v`) |
 | v1.16 | 13 mrt | Duty-cyclus per kring over 4 u (rollend) → `/json` en Sheets |
@@ -547,4 +552,4 @@ Volledige details staan in de versieheader bovenaan de sketch.
 
 ---
 
-*Zarlar thuisautomatisering — Filip Delannoy — bijgewerkt 21 oktober 2026*
+*Zarlar thuisautomatisering — Filip Delannoy — bijgewerkt 1 november 2026*
