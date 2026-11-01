@@ -1,9 +1,20 @@
-/* ESP32C6_MATTER_HVAC.ino = Centrale HVAC controller voor kelder (ESP32-C6) op basis van particle sketch voor Flobecq
+/* ESP32C6_HVAC.ino = Centrale HVAC controller voor kelder (ESP32-C6) op basis van particle sketch voor Flobecq
 Transition from Photon based to ESP32 based Home automation system. Developed together with ChatGPT & Grok in januari '26.
-Thuis bereikbaar op static IP http://192.168.0.70  (mDNS verwijderd — conflict met Matter-stack)
+Thuis bereikbaar op static IP http://192.168.0.70  (geen mDNS; terug in een latere versie)
+Apple Home loopt via de Matter-bridge op de RPi (server.js + matterbridge-zarlar), niet meer via deze sketch.
 
-Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
+Compileer met "partitions.csv" in de sketchfolder (app0 + app1 elk 6MB).
 
+1nov26        Version v2.0: zonder Matter + ventilatie aangepast aan de metingen met Begetube 350 R + AnaBoX v2.0.
+              MATTER WEG: includes, 9 endpoints + callbacks, update_matter_sensors() + 5 s-update in loop(),
+              matterNuclearReset() + vlag, /matter en /matter_reset + menulinks, serial reset-matter,
+              setOnOff() in kring-handlers en checkTstatPins(), pairing-wachtlus (max 5 min) in setup().
+              Bestandsnaam ESP32C6_MATTER_HVAC.ino → ESP32C6_HVAC.ino; opstarttekst toont nu v2.0.
+              VENTILATIE: Begetube-ingang 0,2-10 V = 0-100 % (lineair); onder 0,2 V (ook 0 V of open)
+              draait de unit op VOLLE KRACHT. De oude omrekening (% × 255 / 100) gaf bij 0 % dus 0 V
+              = volle kracht. Nieuw: ventPwm() rekent % → spanning (0,2 + % × 9,8 / 100) → PWM met de
+              gemeten AnaBoX-kromme U = Vmax·D/(D + k·(1−D)), Vmax 9,3 V (met unit), k 2; laagste stand
+              ≥ 0,3 V. Opstart: laagste stand i.p.v. 0 V. PWM 1 kHz → 5 kHz (ripple 0,18 → 0,03 V).
 18mar26       Version v1.19: Matter onChangeOnOff callback: mcp.digitalWrite() onmiddellijk toegevoegd.
                — relais reageren nu direct vanuit Apple Home, niet na volgende pollcyclus
 17mar26       Version v 1.18: ECO JSON keys aangepast aan nieuwe ECO sketch structuur:
@@ -80,10 +91,6 @@ Compileer met "partitions_16mb.csv" in de sketchfolder (app0 + app1 elk 6MB).
 #include <time.h>
 #include <nvs.h>
 #include <nvs_flash.h>
-#include <Matter.h>
-#include <MatterEndPoints/MatterTemperatureSensor.h>
-#include <MatterEndPoints/MatterOnOffPlugin.h>
-#include <MatterEndPoints/MatterFan.h>
 
 Preferences preferences;
 
@@ -91,6 +98,17 @@ Preferences preferences;
 #define I2C_SDA       13
 #define I2C_SCL       11
 #define VENT_FAN_PIN  20
+
+// v2.0: ventilatie Begetube 350 R via AnaBoX v2.0 (gemeten 31/10 en 1/11/2026)
+#define VENT_PWM_FREQ     5000    // Hz — ripple ±0,03 V (1 kHz: 0,18 V)
+#define VENT_U_MIN        0.2f    // V: 0 % ventilatie; LAGER = unit op volle kracht!
+#define VENT_U_MAX        10.0f   // V: 100 % ventilatie
+#define VENT_U_MIN_VEILIG 0.3f    // V: laagste stand die de sketch schrijft (marge)
+#define VENT_VMAX         9.3f    // V: ANA-OUT bij PWM 255 met de unit aangesloten
+#define VENT_K            2.0f    // kromme AnaBoX: U = Vmax·D/(D + k·(1−D))
+float ventU(int pwm);                     // v2.0: vooraankondigingen (gebruikt vóór de definitie)
+int   ventPwm(int pct);
+int   ventSchrijf(int pct);
 
 OneWireNg_CurrentPlatform ow(ONE_WIRE_PIN, false);
 Adafruit_MCP23X17 mcp;
@@ -196,33 +214,14 @@ float boiler_layer_volume = 50.0;
 #define RELAY_PUMP_WON 9
 
 int vent_percent = 0;
-float total_power = 0.0;  // Matter: globaal i.p.v. lokaal in pollRooms()
+float total_power = 0.0;  // globaal (gebruikt in pollRooms, JSON en checkPumpFeedback)
 
-// Ventilatie override (Matter)
+// Ventilatie override (webslider)
 int           vent_override_percent  = 0;
 bool          vent_override_active   = false;
 unsigned long vent_override_start    = 0;
 const unsigned long VENT_OVERRIDE_DURATION = 180UL * 60UL * 1000UL;  // 3 uur
 
-// Matter flags
-bool ignore_callbacks       = false;
-// v1.12: alles_auto_requested verwijderd (matter_alles_auto endpoint weg)
-bool matter_nuclear_reset_requested = false;
-unsigned long last_matter_update = 0;
-
-// =============================================================================
-// Matter endpoints (identiek aan ESP32-C6_HVAC_SIM)
-// =============================================================================
-// v1.8: 14→11 endpoints (ref.doc max=12, veiliger op 11)
-// Verwijderd: matter_boiler_mid (sch_temps[2]), matter_sch_qtot (FAKE kWh), matter_total_power (FAKE kW)
-// Besparing: ~3 × 3.5 KB = ~10 KB heap
-MatterTemperatureSensor matter_boiler_top;   // sch_temps[0]  — bovenste laag
-// v1.12: matter_boiler_bot verwijderd (~3.5KB) — bovenste laag is voldoende indicator
-// v1.12: matter_alles_auto verwijderd (~3.5KB) — overrides via webUI resetten
-
-MatterOnOffPlugin       matter_circuit[7];   // Kringen 1–7, bidirectioneel
-
-MatterFan               matter_vent;         // Ventilatie: snelheid + aan/uit
 
 float sch_temps[6] = {-127,-127,-127,-127,-127,-127};
 float eco_temps[6] = {-127,-127,-127,-127,-127,-127};
@@ -730,7 +729,7 @@ void pollRooms() {
   }
 
   vent_percent = 0;
-  total_power = 0.0;  // Globale variabele (Matter)
+  total_power = 0.0;  // Globale variabele
   const unsigned long OVERRIDE_TIMEOUT = 600000UL;
 
   for (int i = 0; i < circuits_num; i++) {
@@ -942,9 +941,9 @@ void pollRooms() {
   Serial.printf("Total power: %.2f kW, Vent rooms: %d%% HVAC: %d%%\n", total_power, vent_percent, vent_override_percent);
   // v1.13: effectieve ventilatie = max(rooms, HVAC-minimum) — hogere waarde wint altijd
   int effective_vent = max(vent_percent, vent_override_active ? vent_override_percent : 0);
-  int pwm_value = map(effective_vent, 0, 100, 0, 255);
-  ledcWrite(VENT_FAN_PIN, pwm_value);
-  Serial.printf("Vent PWM: %d/255 (%d%% effectief, override=%s)\n", pwm_value, effective_vent, vent_override_active ? "JA" : "NEE");
+  int pwm_value = ventSchrijf(effective_vent);
+  Serial.printf("Vent PWM: %d/255 ≈ %.2f V (%d%% effectief, override=%s)\n", pwm_value,
+                ventU(pwm_value), effective_vent, vent_override_active ? "JA" : "NEE");
   checkPumpFeedback(total_power);
 }
 
@@ -1114,7 +1113,6 @@ void streamMainPage(AsyncWebServerRequest* request) {
     "<div class='container'>"
     "<div class='sidebar'>"
     "<a href='/' class='active'>Status</a>"
-    "<a href='/matter'>Matter</a>"
     "<a href='/update'>OTA</a>"
     "<a href='/json'>JSON</a>"
     "<a href='/settings'>Settings</a>"
@@ -1491,67 +1489,6 @@ void setupWebServer() {
     ESP.restart();
   });
 
-  server.on("/matter", HTTP_GET, [](AsyncWebServerRequest *request) {
-    // v1.11: chunked streaming i.p.v. String html.reserve(3000) — ~3KB heap bespaard
-    AsyncResponseStream* p = request->beginResponseStream("text/html; charset=utf-8");
-    p->print(F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
-      "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-      "<title>Matter</title><style>"
-      "body{font-family:Arial,sans-serif;background:#fff;margin:0;padding:0;}"
-      ".header{display:flex;background:#ffcc00;color:#000;padding:10px 15px;font-size:18px;font-weight:bold;}"
-      ".header-left{flex:1;}.header-right{flex:1;text-align:right;font-size:15px;}"
-      ".sidebar{width:80px;padding:10px 5px;background:#fff;border-right:3px solid #c00;box-sizing:border-box;flex-shrink:0;}"
-      ".sidebar a{display:block;background:#369;color:#fff;padding:8px;margin:8px auto;text-decoration:none;font-weight:bold;font-size:12px;border-radius:6px;text-align:center;width:60px;}"
-      ".sidebar a:hover{background:#036;}.sidebar a.active{background:#c00;}"
-      ".container{display:flex;min-height:calc(100vh - 60px);}"
-      ".main{flex:1;padding:30px;}"
-      ".card{background:#e6f0ff;border:2px solid #369;border-radius:10px;padding:25px;max-width:500px;margin:20px 0;}"
-      ".code{font-family:monospace;font-size:28px;font-weight:bold;color:#003366;background:#fff;padding:12px 20px;border-radius:6px;border:2px solid #369;display:inline-block;letter-spacing:2px;margin:12px 0;}"
-      ".ok{color:#060;font-size:22px;font-weight:bold;}"
-      ".btn-reset{background:#c00;color:#fff;padding:10px 24px;border:none;border-radius:6px;font-size:15px;cursor:pointer;margin-top:20px;}"
-      ".btn-reset:hover{background:#900;}"
-      ".hint{font-size:13px;color:#666;margin-top:8px;}"
-      "@media(max-width:600px){.container{flex-direction:column;}.sidebar{width:100%;border-right:none;border-bottom:3px solid #c00;display:flex;justify-content:center;}.sidebar a{margin:0 3px;}}"
-      "</style></head><body>"
-      "<div class='header'><div class='header-left'>"));
-    p->print(room_id);
-    p->print(F("</div><div class='header-right'>Matter / HomeKit</div></div>"
-      "<div class='container'><div class='sidebar'>"
-      "<a href='/'>Status</a><a href='/matter' class='active'>Matter</a>"
-      "<a href='/update'>OTA</a><a href='/json'>JSON</a>"
-      "<a href='/settings'>Settings</a>"
-      "</div><div class='main'><div class='card'>"));
-    if (Matter.isDeviceCommissioned()) {
-      p->print(F("<div class='ok'>&#x2705; Matter gepaard</div>"
-        "<p>Deze controller is verbonden met Apple Home.</p>"));
-    } else {
-      String pairingCode = Matter.getManualPairingCode();
-      p->print(F("<h2 style='color:#369;margin-top:0;'>Matter koppelen</h2>"
-        "<p><b>1.</b> Open de <b>Apple Home</b> app</p>"
-        "<p><b>2.</b> Tik op <b>+</b> &rarr; <b>Accessoire toevoegen</b> &rarr; <b>Meer opties</b></p>"
-        "<p><b>3.</b> Voer de onderstaande code in:</p>"
-        "<div class='code'>"));
-      p->print(pairingCode);
-      p->print(F("</div><p class='hint'>Of scan de QR-code via de Apple Home app.</p>"));
-    }
-    p->print(F("<br><button class='btn-reset' onclick=\"if(confirm('Matter pairing wissen?')) location.href='/matter_reset';\">"
-      "Matter reset (pairing wissen)</button>"
-      "<p class='hint'>Matter reset wist alleen de HomeKit koppeling. HVAC instellingen blijven intact.</p>"
-      "</div></div></div></body></html>"));
-    request->send(p);
-  });
-
-  // v1.10: Nuclear reset via flag — handler zet alleen flag, main loop voert uit
-  // Reden: nvs_flash_erase() vanuit async-task kan racen met Matter-stack NVS-writes
-  server.on("/matter_reset", HTTP_GET, [](AsyncWebServerRequest *request) {
-    matter_nuclear_reset_requested = true;
-    request->send(200, "text/html",
-      "<h2 style='text-align:center;padding:40px;color:#c00;'>"
-      "Matter nuclear reset gestart...<br>"
-      "<small style='font-size:16px;color:#666;'>Settings worden bewaard. Rebooting in 1 sec.</small>"
-      "</h2>");
-    Serial.println("\n[WEB] Matter nuclear reset aangevraagd via /matter_reset");
-  });
 
   // v1.8: /settings ook chunked — was html.reserve(10000) op heap
   // v1.10: /settings hybrid — statische form-shell + circuits via JS/fetch(/json_settings)
@@ -1587,7 +1524,7 @@ void setupWebServer() {
     p->print(room_id);
     p->print(F("</div><div class='header-right'>Instellingen</div></div>"
       "<div class='container'><div class='sidebar'>"
-      "<a href='/'>Status</a><a href='/matter'>Matter</a>"
+      "<a href='/'>Status</a>"
       "<a href='/update'>OTA</a><a href='/json'>JSON</a>"
       "<a href='/settings' class='active'>Settings</a>"
       "</div><div class='main'><form id='sf' action='/save_settings' method='get'>"));
@@ -1784,9 +1721,6 @@ void setupWebServer() {
         circuits[idx].heating_on      = true;
         // v1.14: relay onmiddellijk schakelen — niet wachten op pollcyclus
         if (mcp_available) mcp.digitalWrite(idx, LOW);
-        ignore_callbacks = true;
-        matter_circuit[idx].setOnOff(true);
-        ignore_callbacks = false;
         Serial.printf("[OVERRIDE] c%d → ON (relay onmiddellijk)\n", idx + 1);
       }
     }
@@ -1803,9 +1737,6 @@ void setupWebServer() {
         circuits[idx].heating_on      = false;
         // v1.14: relay onmiddellijk schakelen — niet wachten op pollcyclus
         if (mcp_available) mcp.digitalWrite(idx, HIGH);
-        ignore_callbacks = true;
-        matter_circuit[idx].setOnOff(false);
-        ignore_callbacks = false;
         Serial.printf("[OVERRIDE] c%d → OFF (relay onmiddellijk)\n", idx + 1);
       }
     }
@@ -1819,9 +1750,6 @@ void setupWebServer() {
         circuits[idx].override_active = false;
         // v1.14: relay onmiddellijk terugzetten naar auto-staat
         if (mcp_available) mcp.digitalWrite(idx, circuits[idx].heating_on ? LOW : HIGH);
-        ignore_callbacks = true;
-        matter_circuit[idx].setOnOff(circuits[idx].heating_on);
-        ignore_callbacks = false;
         Serial.printf("[OVERRIDE] c%d → AUTO (relay onmiddellijk)\n", idx + 1);
       }
     }
@@ -1923,7 +1851,7 @@ void setupWebServer() {
       }
       // v1.15: altijd max(rooms, override) schrijven — consistent met pollRooms en JSON
       int eff = max(vent_percent, vent_override_active ? vent_override_percent : 0);
-      ledcWrite(VENT_FAN_PIN, map(eff, 0, 100, 0, 255));
+      ventSchrijf(eff);
     }
     request->send(200, "text/plain", "OK");
   });
@@ -1943,7 +1871,7 @@ void setupWebServer() {
 }
 
 // =============================================================================
-// Matter: ventilatie override timeout bewaken
+// Ventilatie override timeout bewaken
 // (circuit-overrides worden al beheerd in pollRooms() via OVERRIDE_TIMEOUT)
 // =============================================================================
 void check_vent_override() {
@@ -1952,40 +1880,42 @@ void check_vent_override() {
     vent_override_active  = false;
     vent_override_percent = 0;
     // v1.15: terugval naar rooms-waarde, niet naar 0
-    ledcWrite(VENT_FAN_PIN, map(vent_percent, 0, 100, 0, 255));
+    ventSchrijf(vent_percent);
     Serial.printf(F("[OVERRIDE] Ventilatie — vervallen na 3u, terug naar rooms (%d%%)\n"), vent_percent);
   }
 }
 
 
-// =============================================================================
-// Matter: sensor feedback en circuit-states pushen naar HomeKit
-// =============================================================================
-void update_matter_sensors() {
-  matter_boiler_top.setTemperature(sch_temps[0]);
-  // v1.12: matter_boiler_bot verwijderd
 
-  // Fan: snelheidsfeedback → HomeKit — v1.15: zelfde max() formule als pin en JSON
-  ignore_callbacks = true;
-  int effective_vent = max(vent_percent, vent_override_active ? vent_override_percent : 0);
-  matter_vent.setSpeedPercent((uint8_t)effective_vent);
-  if (!vent_override_active) {
-    matter_vent.setMode(effective_vent > 0
-                        ? MatterFan::FAN_MODE_HIGH
-                        : MatterFan::FAN_MODE_OFF);
-  }
-  ignore_callbacks = false;
 
-  // Circuit-switches: alleen spiegelen als geen override actief
-  ignore_callbacks = true;
-  for (int i = 0; i < 7; i++) {
-    if (!circuits[i].override_active) {
-      matter_circuit[i].setOnOff(circuits[i].heating_on);
-    }
-  }
-  ignore_callbacks = false;
+// =============================================================================
+// v2.0: Ventilatie — % (0-100) → PWM via de gemeten kromme van de AnaBoX v2.0
+// Begetube 350 R: 0,2-10 V = 0-100 % (lineair); onder 0,2 V = VOLLE KRACHT.
+// AnaBoX v2.0 (zonder R3): U = Vmax·D/(D + k·(1−D)), D = duty 0-1.
+// Omgekeerd: u = U/Vmax → D = k·u/(1 + (k−1)·u).
+// =============================================================================
+float ventU(int pwm) {                       // verwachte spanning op klem 7-8
+  float D = pwm / 255.0f;
+  if (D <= 0) return 0;
+  return VENT_VMAX * D / (D + VENT_K * (1 - D));
 }
 
+int ventPwm(int pct) {                       // ventilatie-% → PWM 0-255
+  pct = constrain(pct, 0, 100);
+  float U = VENT_U_MIN + pct * (VENT_U_MAX - VENT_U_MIN) / 100.0f;
+  int v;
+  float u = U / VENT_VMAX;
+  if (u >= 1) v = 255;
+  else v = constrain((int)lroundf(VENT_K * u / (1 + (VENT_K - 1) * u) * 255), 0, 255);
+  while (v < 255 && ventU(v) < VENT_U_MIN_VEILIG) v++;   // nooit onder 0,3 V
+  return v;
+}
+
+int ventSchrijf(int pct) {                   // schrijft naar IO20, geeft PWM terug
+  int v = ventPwm(pct);
+  ledcWrite(VENT_FAN_PIN, v);
+  return v;
+}
 
 void factoryResetNVS() {
   Serial.println("\n=== FACTORY RESET NVS ===");
@@ -1997,121 +1927,6 @@ void factoryResetNVS() {
   ESP.restart();
 }
 
-// v1.10: Nuclear Matter reset — 100% betrouwbare methode
-// Probleem met oude methode: nvs_erase_all() per namespace vanuit async-task
-//   → task-conflict met Matter-stack, namespace-resten, onvolledige wis
-// Deze methode:
-//   1) Laad ALLE hvac-config naar RAM
-//   2) nvs_flash_erase() — wist de VOLLEDIGE NVS-partitie atomair
-//   3) nvs_flash_init()  — herinitialiseer NVS
-//   4) Schrijf hvac-config terug vanuit RAM
-//   5) Reboot → Matter.isDeviceCommissioned() = false gegarandeerd
-void matterNuclearReset() {
-  Serial.println("\n=== MATTER NUCLEAR RESET ===");
-  Serial.println("Stap 1: Settings laden naar RAM...");
-
-  // ── Laad alle hvac-config naar lokale RAM-variabelen ─────────────────────
-  preferences.begin("hvac-config", true);  // read-only
-
-  String  bk_room_id          = preferences.getString("room_id",          room_id);
-  String  bk_wifi_ssid         = preferences.getString("wifi_ssid",        wifi_ssid);
-  String  bk_wifi_pass         = preferences.getString("wifi_pass",        wifi_pass);
-  String  bk_static_ip         = preferences.getString("static_ip",        static_ip_str);
-  int     bk_circuits_num      = preferences.getInt   ("circuits_num",     circuits_num);
-  int     bk_poll_interval     = preferences.getInt   ("poll_interval",    poll_interval);
-  String  bk_eco_ip            = preferences.getString("eco_ip",           eco_controller_ip);
-  String  bk_eco_mdns          = preferences.getString("eco_mdns",         eco_controller_mdns);
-  float   bk_eco_threshold     = preferences.getFloat ("eco_threshold",    eco_threshold);
-  float   bk_eco_hysteresis    = preferences.getFloat ("eco_hysteresis",   eco_hysteresis);
-  float   bk_eco_min_temp      = preferences.getFloat ("eco_min_temp",     eco_min_temp);
-  float   bk_eco_max_temp      = preferences.getFloat ("eco_max_temp",     eco_max_temp);
-  float   bk_boiler_ref_temp   = preferences.getFloat ("boiler_ref_temp",  boiler_ref_temp);
-  float   bk_boiler_volume     = preferences.getFloat ("boiler_volume",    boiler_layer_volume);
-  String  bk_gas_url           = preferences.getString(NVS_GAS_URL,        gas_url);
-  float   bk_tot_sch_kwh       = preferences.getFloat (NVS_TOTAL_SCH_KWH, 0.0);
-  float   bk_tot_won_kwh       = preferences.getFloat (NVS_TOTAL_WON_KWH, 0.0);
-
-  String bk_nick[6];
-  for (int i = 0; i < 6; i++) {
-    char bNickKey[24]; char bNickDef[16];
-    snprintf(bNickKey, sizeof(bNickKey), "sensor_nick_%d", i);
-    snprintf(bNickDef, sizeof(bNickDef), "Sensor %d", i+1);
-    bk_nick[i] = preferences.getString(bNickKey, bNickDef);
-  }
-
-  // Circuit backup
-  struct CircuitBackup {
-    char name[32]; char ip[20]; char mdns[32];
-    float power_kw; bool has_tstat; int tstat_pin;
-  } bk_circ[7];
-  int bk_num = min(bk_circuits_num, 7);
-  char bKey[24];
-  for (int i = 0; i < bk_num; i++) {
-    String tmp;
-    snprintf(bKey, sizeof(bKey), "c%d_name", i);
-    char defName[16]; snprintf(defName, sizeof(defName), "Circuit %d", i+1);
-    tmp = preferences.getString(bKey, defName); strlcpy(bk_circ[i].name, tmp.c_str(), 32);
-    snprintf(bKey, sizeof(bKey), "c%d_ip", i);
-    tmp = preferences.getString(bKey, "");       strlcpy(bk_circ[i].ip,   tmp.c_str(), 20);
-    snprintf(bKey, sizeof(bKey), "c%d_mdns", i);
-    tmp = preferences.getString(bKey, "");       strlcpy(bk_circ[i].mdns, tmp.c_str(), 32);
-    snprintf(bKey, sizeof(bKey), "c%d_power", i);  bk_circ[i].power_kw  = preferences.getFloat(bKey, 0.0);
-    snprintf(bKey, sizeof(bKey), "c%d_tstat", i);  bk_circ[i].has_tstat = preferences.getBool (bKey, false);
-    snprintf(bKey, sizeof(bKey), "c%d_pin",   i);  bk_circ[i].tstat_pin = preferences.getInt  (bKey, 255);
-  }
-  preferences.end();
-  Serial.println("  Settings in RAM geladen.");
-
-  // ── Stap 2: Volledige NVS-partitie wissen ────────────────────────────────
-  Serial.println("Stap 2: nvs_flash_erase() — volledige NVS partitie...");
-  esp_err_t err = nvs_flash_erase();
-  Serial.printf("  nvs_flash_erase: %s\n", esp_err_to_name(err));
-
-  // ── Stap 3: NVS herinitialiseren ─────────────────────────────────────────
-  Serial.println("Stap 3: nvs_flash_init()...");
-  err = nvs_flash_init();
-  Serial.printf("  nvs_flash_init: %s\n", esp_err_to_name(err));
-
-  // ── Stap 4: hvac-config terugschrijven ───────────────────────────────────
-  Serial.println("Stap 4: Settings terugschrijven...");
-  preferences.begin("hvac-config", false);
-  preferences.putString("room_id",       bk_room_id);
-  preferences.putString("wifi_ssid",     bk_wifi_ssid);
-  preferences.putString("wifi_pass",     bk_wifi_pass);
-  preferences.putString("static_ip",     bk_static_ip);
-  preferences.putInt   ("circuits_num",  bk_circuits_num);
-  preferences.putInt   ("poll_interval", bk_poll_interval);
-  preferences.putString("eco_ip",        bk_eco_ip);
-  preferences.putString("eco_mdns",      bk_eco_mdns);
-  preferences.putFloat ("eco_threshold", bk_eco_threshold);
-  preferences.putFloat ("eco_hysteresis",bk_eco_hysteresis);
-  preferences.putFloat ("eco_min_temp",  bk_eco_min_temp);
-  preferences.putFloat ("eco_max_temp",  bk_eco_max_temp);
-  preferences.putFloat ("boiler_ref_temp", bk_boiler_ref_temp);
-  preferences.putFloat ("boiler_volume", bk_boiler_volume);
-  preferences.putString(NVS_GAS_URL,     bk_gas_url);
-  preferences.putFloat (NVS_TOTAL_SCH_KWH, bk_tot_sch_kwh);
-  preferences.putFloat (NVS_TOTAL_WON_KWH, bk_tot_won_kwh);
-  for (int i = 0; i < 6; i++) {
-    snprintf(bKey, sizeof(bKey), "sensor_nick_%d", i);
-    preferences.putString(bKey, bk_nick[i]);
-  }
-  for (int i = 0; i < bk_num; i++) {
-    snprintf(bKey, sizeof(bKey), "c%d_name",  i); preferences.putString(bKey, bk_circ[i].name);
-    snprintf(bKey, sizeof(bKey), "c%d_ip",    i); preferences.putString(bKey, bk_circ[i].ip);
-    snprintf(bKey, sizeof(bKey), "c%d_mdns",  i); preferences.putString(bKey, bk_circ[i].mdns);
-    snprintf(bKey, sizeof(bKey), "c%d_power", i); preferences.putFloat (bKey, bk_circ[i].power_kw);
-    snprintf(bKey, sizeof(bKey), "c%d_tstat", i); preferences.putBool  (bKey, bk_circ[i].has_tstat);
-    snprintf(bKey, sizeof(bKey), "c%d_pin",   i); preferences.putInt   (bKey, bk_circ[i].tstat_pin);
-  }
-  preferences.end();
-  Serial.println("  Settings teruggeschreven.");
-
-  // ── Stap 5: Reboot ───────────────────────────────────────────────────────
-  Serial.println("Stap 5: Rebooting... Matter zal ongepaard opstarten.");
-  delay(500);
-  ESP.restart();
-}
 
 
 
@@ -2134,8 +1949,8 @@ void setup() {
   Serial.begin(115200);
   delay(1500);  // Wacht tot Serial Monitor klaar is
   while (Serial.available()) Serial.read();  // Flush eventuele rommel
-  Serial.println("\n\n=== HVAC Controller v1.10 ===");
-  Serial.println("Commando's: 'R' = NVS reset, 'reset-matter', 'reset-all', 'status'");
+  Serial.println("\n\n=== HVAC Controller v2.0 ===");
+  Serial.println("Commando's: 'R' = NVS reset, 'reset-all', 'status'");
 
   // v1.7 FIX 4: Crash-log lezen bij boot — toont of vorige run gecrasht is
   {
@@ -2166,8 +1981,9 @@ void setup() {
   Serial.println("(geen reset)");
 
   // Ventilatie PWM output (ESP32-C6: ledcAttach ipv analogWrite)
-  ledcAttach(VENT_FAN_PIN, 1000, 8);  // pin, 1kHz, 8-bit (0-255)
-  ledcWrite(VENT_FAN_PIN, 0);          // Start op 0%
+  // v2.0: 5 kHz; start op de laagste stand (0 % ≈ 0,3 V). NIET 0 V: dat is volle kracht!
+  ledcAttach(VENT_FAN_PIN, VENT_PWM_FREQ, 8);  // pin, 5 kHz, 8-bit (0-255)
+  ventSchrijf(0);
 
   // I2C & MCP23017
   Wire.begin(I2C_SDA, I2C_SCL);
@@ -2408,134 +2224,8 @@ void setup() {
     }
   }
 
-  // mDNS verwijderd (v1.7 FIX 5) — veroorzaakte mdns_service_remove_for_host fouten samen met Matter-stack.
-  // Gebruik static IP 192.168.0.70 of de hostnaam in router-DHCP-tabel voor toegang.
+  // Geen mDNS (v1.7 FIX 5). Gebruik static IP 192.168.0.70. mDNS komt terug in een latere versie.
 
-  // ── Matter initialisatie (alleen als WiFi verbonden — niet in AP mode) ────
-  if (!ap_mode_active) {
-    Serial.println(F("\n── Matter initialisatie ────────────────────────────────"));
-
-    // v1.8: enkel top — bot verwijderd in v1.12
-    matter_boiler_top.begin();
-
-    // Circuit-plugins: begin + callback
-    for (int i = 0; i < 7; i++) {
-      matter_circuit[i].begin();
-      matter_circuit[i].setOnOff(circuits[i].heating_on);
-
-      matter_circuit[i].onChangeOnOff([i](bool on_off) -> bool {
-        if (ignore_callbacks) return true;
-        circuits[i].override_start  = millis();
-        circuits[i].override_active = true;
-        circuits[i].override_state  = on_off;
-        circuits[i].heating_on      = on_off;
-        // v1.19: relay onmiddellijk schakelen vanuit HomeKit — niet wachten op pollcyclus
-        if (mcp_available) mcp.digitalWrite(i, on_off ? LOW : HIGH);
-        Serial.printf("[HomeKit] Kring %d '%s' → override %s (relay onmiddellijk)\n",
-                      i + 1, circuits[i].name, on_off ? "AAN" : "UIT");
-        return true;
-      });
-    }
-
-    // v1.12: matter_alles_auto verwijderd — alles_auto_requested flag niet meer gebruikt
-
-    // MatterFan: ventilatiebediening
-    matter_vent.begin(0, MatterFan::FAN_MODE_OFF, MatterFan::FAN_MODE_SEQ_OFF_HIGH);
-
-    matter_vent.onChangeSpeedPercent([](uint8_t new_pct) -> bool {
-      if (ignore_callbacks) return true;
-      if (new_pct == 0) {
-        vent_override_active  = false;
-        vent_override_percent = 0;
-        ledcWrite(VENT_FAN_PIN, 0);  // Direct naar pin
-        Serial.println(F("[HomeKit] Vent speed = 0% → terug naar auto"));
-      } else {
-        vent_override_start   = millis();
-        vent_override_active  = true;
-        vent_override_percent = new_pct;
-        ledcWrite(VENT_FAN_PIN, map(new_pct, 0, 100, 0, 255));  // Direct naar pin
-        Serial.printf("[HomeKit] Vent speed override → %d%%\n", new_pct);
-      }
-      return true;
-    });
-
-    matter_vent.onChangeMode([](uint8_t new_mode) -> bool {
-      if (ignore_callbacks) return true;
-      if (new_mode == MatterFan::FAN_MODE_OFF) {
-        vent_override_active  = false;
-        vent_override_percent = 0;
-        ignore_callbacks = true;
-        matter_vent.setSpeedPercent(0);
-        ignore_callbacks = false;
-        Serial.println(F("[HomeKit] Vent mode OFF → terug naar auto, speed=0"));
-      } else {
-        if (!vent_override_active) {
-          vent_override_start   = millis();  // EERST
-          vent_override_active  = true;      // DAN
-          vent_override_percent = 30;
-          ignore_callbacks = true;
-          matter_vent.setSpeedPercent(30);
-          ignore_callbacks = false;
-          Serial.println(F("[HomeKit] Vent mode AAN → override 30%"));
-        }
-      }
-      return true;
-    });
-
-    // v1.10: Heap-diagnose voor Matter.begin() — geeft inzicht in stack-kost
-    uint32_t heap_pre = ESP.getFreeHeap();
-    uint32_t lb_pre   = ESP.getMaxAllocHeap();
-    Serial.printf("[HEAP pre-Matter]  free=%u  largest=%u  min_ever=%u\n",
-      heap_pre, lb_pre, ESP.getMinFreeHeap());
-
-    // Matter starten — detecteer fout via isDeviceCommissioned na begin
-    Matter.begin();
-
-    // Check of Matter correct geinitialiseerd is
-    bool matter_ok = true;
-    // Korte delay om stack te laten starten
-    delay(200);
-
-    // v1.10: Heap-diagnose na Matter.begin()
-    uint32_t heap_post = ESP.getFreeHeap();
-    uint32_t lb_post   = ESP.getMaxAllocHeap();
-    Serial.printf("[HEAP post-Matter] free=%u  largest=%u  min_ever=%u\n",
-      heap_post, lb_post, ESP.getMinFreeHeap());
-    Serial.printf("[HEAP Matter kost] free:-%d  largest:-%d\n",
-      (int)(heap_pre - heap_post), (int)(lb_pre - lb_post));
-
-    // Als getManualPairingCode() leeg is EN niet commissioned → init gefaald
-    if (!Matter.isDeviceCommissioned() && Matter.getManualPairingCode().length() < 5) {
-      matter_ok = false;
-    }
-
-    // Pairing check
-    Serial.println(F("\n══════════════════════════════════════════"));
-    if (!matter_ok) {
-      Serial.println(F("MATTER: Initialisatie MISLUKT (NVS corrupt?)"));
-      Serial.println(F("-> Nuclear reset: NVS volledig wissen, settings bewaren, reboot..."));
-      matterNuclearReset();  // v1.10: nuclear reset i.p.v. per-namespace wis
-    } else if (!Matter.isDeviceCommissioned()) {
-      Serial.println(F("MATTER: Nog niet gepaard."));
-      Serial.println(F("► Manuele code:"));
-      Serial.println("    " + Matter.getManualPairingCode());
-      Serial.println("► http://" + WiFi.localIP().toString() + "/matter");
-      Serial.println(F("Wacht op commissioning... (timeout 5 min, daarna doorgaan)"));
-      unsigned long pair_start = millis();
-      while (!Matter.isDeviceCommissioned() && (millis() - pair_start < 300000)) {
-        delay(500); Serial.print(".");
-      }
-      if (Matter.isDeviceCommissioned()) {
-        Serial.println(F("\nGEPAARD!"));
-      } else {
-        Serial.println(F("\nTimeout — doorgaan zonder pairing. Ga naar /matter om te koppelen."));
-      }
-    } else {
-      Serial.println(F("MATTER: Al gepaard. Ga naar /matter voor reset."));
-    }
-    Serial.println(F("══════════════════════════════════════════\n"));
-  }
-  // ── Einde Matter initialisatie ────────────────────────────────────────────
 
   setupWebServer();
   Serial.println("\nWeb server started!");
@@ -2560,9 +2250,6 @@ void checkTstatPins() {
     // Flankwijziging gedetecteerd — relay onmiddellijk schakelen
     circuits[i].heating_on = tstat_on;
     mcp.digitalWrite(i, tstat_on ? LOW : HIGH);
-    ignore_callbacks = true;
-    matter_circuit[i].setOnOff(tstat_on);
-    ignore_callbacks = false;
     Serial.printf("[TSTAT] c%d pin%d → %s (onmiddellijk)\n",
                   i + 1, pin, tstat_on ? "AAN" : "UIT");
   }
@@ -2573,25 +2260,13 @@ void loop() {
 
   uptime_sec = millis() / 1000;
 
-  // v1.10: Nuclear reset flag — wordt gezet door /matter_reset handler (async-task)
-  // Uitvoering vanuit main loop: geen task-conflict met Matter-stack NVS-writes
-  if (matter_nuclear_reset_requested) {
-    matter_nuclear_reset_requested = false;
-    delay(200);  // Geef async response tijd om te verzenden
-    matterNuclearReset();
-  }
 
-  // ── Matter serial commando's ─────────────────────────────────────────────
+  // ── Serial commando's ────────────────────────────────────────────────────
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
-    if (cmd.equalsIgnoreCase("reset-matter")) {
-      // v1.10: nuclear reset via serial — zelfde methode als web-knop
-      Serial.println(F("Matter nuclear reset (instellingen blijven intact)..."));
-      matterNuclearReset();
-    }
     if (cmd.equalsIgnoreCase("reset-all")) {
-      Serial.println(F("Alles wissen (instellingen + Matter) + reboot..."));
+      Serial.println(F("Alles wissen (instellingen) + reboot..."));
       preferences.begin("hvac-config", false);
       preferences.clear();
       preferences.end();
@@ -2644,11 +2319,6 @@ void loop() {
     pushToGoogleSheets();
   }
 
-  // ── Matter update elke 5s ────────────────────────────────────────────────
-  if (!ap_mode_active && millis() - last_matter_update > 5000) {
-    last_matter_update = millis();
-    update_matter_sensors();
-  }
 
   // v1.15: TSTAT snelcheck elke 100ms — onmiddellijke relay-reactie op thermostaatwijziging
   checkTstatPins();
