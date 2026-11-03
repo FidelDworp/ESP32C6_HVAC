@@ -8,7 +8,7 @@ De centrale controller in de kelder die de **verwarmingskringen**, de **ventilat
 | **Adres** | `http://192.168.0.70` (vast IP, geen mDNS) |
 | **Board** | ESP32-C6 32-pin clone, MAC `58:8C:81:32:2B:90` |
 | **Status** | 🧪 **Testopstelling** (nog niet in productie) — kringen met testinstellingen, alle 7 op room80 |
-| **Volgende stap** | v2.0 uploaden en testen (48 u, geheugen meten — §10 stap 4), daarna Sheets enkel via het Dashboard → **v2.1** |
+| **Volgende stap** | v2.0 ✅ getest (48 u zonder herstart, heap 68 % / 247 KB — §10 stap 4). Nu: eigen Sheets-push weg → **v2.1** (§10 stap 5b) |
 | **Systeemdocument** | [Zarlar Master Overnamedocument](https://github.com/FidelDworp/ZarlarApp/blob/main/ESP32_Zarlar/Zarlar_Master_Overnamedocument.md) — §4 gaat over deze controller |
 
 > **Leeswijzer.** §1 en §2 zijn voor wie het systeem leert kennen. §3 t.e.m. §9 beschrijven wat er nu draait. §10 en §11 beschrijven wat er nog moet gebeuren. Bij twijfel is **de sketch de waarheid**, niet dit document.
@@ -97,7 +97,8 @@ De controller is bewust "dom": de slimheid (setpoints, aanwezigheid) zit in de r
 | `Productie/partitions.csv` | Geheugenindeling van de flash (16 MB, 2 × 6 MB app voor OTA). Moet naast het `.ino`-bestand staan. |
 | `Productie/HVAC_GoogleScript.gs` | Google Apps Script v5: ontvangt de HVAC-data (via het Dashboard) en schrijft ze in een Google Sheet |
 | `Old/Old HVAC_Photon.cpp` | De Particle Photon-sketch. ⚠️ **Draait nog in productie** op de Photon S-HVAC, die vandaag de echte verwarming stuurt |
-| `Old/Old ESP32_HVAC-NoMatter.ino` | Oude ESP32-versie zonder Matter (januari 2026, V53.x). **Alleen ter referentie** — niet de basis voor v2.0 |
+| `Old/ESP32C6_MATTER_HVAC.ino` | Vorige versie v1.19 (met Matter). **Alleen ter referentie** |
+| `Old/Old ESP32_HVAC-NoMatter.ino` | Oude ESP32-versie zonder Matter (januari 2026, V53.x). **Alleen ter referentie** |
 | `Old/Old HVAC_GoogleScript.gs` | Oud Apps Script (lange JSON-sleutels) — niet meer compatibel |
 | `Old/CHECKLIST` | Oude werklijst |
 
@@ -346,7 +347,7 @@ HVAC .70  /json  ──►  Dashboard .60 (pollt, om de 5 cycli een POST)  ─�
 - Het Dashboard voegt een veld `"room"` toe; het HVAC-script negeert dat.
 - Het script schrijft één rij per bericht en houdt maximaal 1000 rijen bij; oudere rijen worden gewist.
 
-**Overgang:** v1.19 kan nog **zelf** posten, als in zijn eigen `/settings` een Google Script-URL ingevuld is. Dat veld moet **leeg** zijn, anders komt elke meting dubbel in de Sheet. De code ervoor verdwijnt in **v2.1** (§10, stap 5).
+**Overgang:** v2.0 bevat nog de oude code om **zelf** te posten, maar het veld Google Script-URL in de HVAC-`/settings` is **leeg** (sinds 1 nov 2026), dus alleen het Dashboard post. Laat het leeg, anders komt elke meting dubbel in de Sheet. De code verdwijnt in **v2.1** (§10).
 
 **Een scriptwijziging publiceren:** altijd *Implementaties beheren → potlood (bewerken) → nieuwe versie*, **nooit** "Nieuwe implementatie". Anders verandert de URL en moet die opnieuw in de Dashboard-`/settings`.
 
@@ -369,97 +370,26 @@ HVAC .70  /json  ──►  Dashboard .60 (pollt, om de 5 cycli een POST)  ─�
 
 ## 10. Migratie zonder Matter — v2.0
 
-*Plan van 18 okt 2026, bijgewerkt 21 okt 2026 (stap 1 afgerond, stap 2: H1 + H2 klaar), naar het voorbeeld van ROOM v3.0 (Master §7.9 en §16, Portal Plan §16).*
+*Plan van 18 okt 2026, naar het voorbeeld van ROOM v3.0 (Master §7.9 en §16, Portal Plan §16). Werkwijze: één stap tegelijk, elke stap met een meetpunt, code pas na GO.*
 
-**Waarom:** Matter kost veel werkgeheugen (volgens Master §16: 80-120 KB per controller) en maakt de sketch ingewikkeld. Apple Home zal voortaan enkel nog praten met de **Raspberry Pi** (`192.168.0.50`), die via een Matter-bridge de HVAC aanbiedt.
+**Waarom:** Matter kostte veel werkgeheugen en maakte de sketch ingewikkeld. Apple Home praat nu alleen nog met de **Raspberry Pi** (`192.168.0.50`), die via een Matter-bridge de HVAC aanbiedt.
 
-**Vertrekpunt:** `ESP32C6_MATTER_HVAC.ino` **v1.19**, niet de oude `Old/Old ESP32_HVAC-NoMatter.ino`. Na januari kwamen 19 versies met verbeteringen die niets met Matter te maken hebben (heap, duty-cyclus, TSTAT, JSON-keys). Matter zit op afgebakende plaatsen en is gericht te verwijderen.
+### Stappen 1-4 ✅ afgerond (19 okt – 3 nov 2026)
 
-**Werkwijze:** één stap tegelijk. Elke stap heeft een meetpunt. Pas na expliciete GO naar de volgende stap. Code pas na GO.
-
-### Stap 1 — Geheugen meten met Matter (v1.19) ✅ *afgerond 19 okt 2026*
-
-Geen codewijziging nodig — v1.19 meet dit zelf.
-
-- **Bij het opstarten (Serial Monitor):** de regels `[HEAP pre-Matter]`, `[HEAP post-Matter]` en `[HEAP Matter kost]`. Die laatste toont rechtstreeks hoeveel Matter vandaag kost.
-- **Tijdens het draaien (`/json`):** `ad` (vrije heap, %) en `ae` (grootste blok, KB), na enkele uren, en de laagste waarde over 24 u (Google Sheets, kolom AE/AF).
-
-| Meting v1.19 (met Matter) | free | largest | min_ever | Datum |
-|---|---|---|---|---|
-| Boot — pre-Matter | 142 232 B (139 KB) | 126 964 B (124 KB) | 142 204 B | 19 okt 2026 |
-| Boot — post-Matter | 79 400 B (78 KB) | 63 476 B (62 KB) | 76 636 B | 19 okt 2026 |
-| **Boot — Matter kost** | **−62 832 B (−61 KB)** | **−63 488 B (−62 KB)** | — | 19 okt 2026 |
-| Runtime (`ad` % / `ae` KB) — mediaan | **18 %** | **30 KB** | — | 26 mei – 4 okt 2026 |
-| Runtime — spreiding | 17-18 % | 25-32 KB | — | idem |
-| Runtime — laagste waarde | 17 % | **25 KB** (4×) | — | 27 mei, 14 sep (2×), 30 sep |
-
-**Bron:** Google Sheet "S-HVAC Log", 1006 rijen van 26 mei tot 4 okt 2026 (HVAC staat sinds 4 okt uit voor de ventilatie-ombouw). Analyse 19 okt 2026.
-
-**Wat dit betekent:**
-- Het grootste vrije blok zit bijna altijd in de zone **"LAAG"** van de eigen kleurcode (25-35 KB) en raakte 4 keer de **crash-log-drempel van 25 KB**. Het Master-document (§4.5) gaf "> 35 KB stabiel" — dat klopt niet (rechtgezet).
-- **3 herstarts** in de periode (10 jul, 12 aug, 11 sep), telkens na 23-30 dagen uptime. Oorzaak onbekend (crash of stroomonderbreking). De crash-log in `/settings` kan het tonen zodra de HVAC weer aan staat.
-- **Logging:** maar 2-45 rijen per dag binnengekomen in plaats van 288 (één per 5 min), en een gat van 29 mei tot 10 jul. De intervallen zijn veelvouden van 5 min: de meeste HTTPS-posts **mislukken** — passend bij een grootste blok van ~30 KB (TLS heeft meer nodig). Welke van de twee (HVAC zelf of het Dashboard) die posts verstuurt, blijkt uit stap 5a.
-
-**Opstartmeting (19 okt 2026, na de hardware-ombouw):** Matter neemt bij het opstarten **61 KB** vrij geheugen en halveert het grootste vrije blok (124 → 62 KB). Tijdens het draaien zakt dat blok verder tot ~30 KB. **Verwachting v2.0:** grootste blok tijdens het draaien ruim boven 35 KB (zone "OK").
-
-**Ook gezien in de opstartlog (19 okt 2026):**
-- **Crash-log #3: "heap 23 KB @ 120 s"** — de vorige run zakte 2 minuten na de start al onder de drempel van 25 KB.
-- **Kringinstellingen = testopstelling (bewust, bevestigd door FiDel):** c1-c7 "Een"-"Zeven", 1-7 kW, alle kringen pollen room80. De Sheet bevestigt dit ("HeatDem 28 kW" = 1+2+…+7). Voor de heap-meting maakt dat niet uit: 7 polls per cyclus, net als in productie.
-- **NTP-tijd: TIMEOUT** — de klok synchroniseert niet. Zie §11.
-- **WiFi-signaal:** −79 dBm bij de start, −71 dBm daarna — zwak, maar normaal voor de testopstelling op de grond.
-- Matter-meldingen `chip[DMG] … Cluster 0x0000_0031 not found` en `mdns_service_remove_for_host … Service doesn't exist` — onschuldig, verdwijnen normaal met v2.0.
-- `esp_core_dump_flash: No core dump partition found!` — onschuldig: de partitietabel heeft bewust geen core-dump-partitie.
-
-### Stap 2 — De RPi neemt Apple Home over (geen sketchwijziging) ✅ *H1 + H2 klaar 21 okt 2026* · ⏳ *tegels testen, dan H3*
-
-`server.js` en de plugin `matterbridge-zarlar` op de RPi bieden de HVAC aan als **één gecombineerd toestel "HVAC"** in de woning Zarlardinge, zoals room80. **Volledig plan: Portal Plan §16.12** (19 okt 2026).
-
-> De drie Photon-knoppen van S-HVAC (*ECO => SCHUUR*, *ECO => WONING*, *HVAC Home* → hernoemd naar "HOME") blijven: de **Photon S-HVAC stuurt nog de echte verwarming**.
-
-| Onderdeel van "HVAC" | Uit `/json` | Klikken |
+| Stap | Wat | Resultaat |
 |---|---|---|
-| Boiler boven / gem. / onder (temperatuur) | `b`, `h`, `g` | — |
-| Kring 1-7 (als *stopcontact*, niet als lamp — "alle lampen uit" mag de verwarming niet raken) | `p`-`v` | override 10 min |
-| Ventilatie (%) | `x` | `/set_vent` (minimum 3 u), 0 = automatisch |
-| ECO => SCHUUR / ECO => WONING (nieuw t.o.v. de ESP32-Matter) | `y`, `aa` | 60 s geforceerd aan, daarna vanzelf uit |
+| 1 | Geheugen meten met Matter (v1.19) | Matter kostte bij het opstarten 61 KB; tijdens het draaien grootste blok ~30 KB (zone "LAAG"), vrij 17-18 % |
+| 2 | De RPi neemt Apple Home over (`server.js` v2.10 + plugin `matterbridge-zarlar` v0.7, Portal Plan §16.12) | Toestel "HVAC" in de woning Zarlardinge: boiler, 7 kringen, ventilatie, ECO => SCHUUR / WONING. Alle tegels werken (3/11) |
+| 3 | **v2.0**: Matter weg + ventilatie (§5.2, §6.4) + bestandsnaam `ESP32C6_HVAC.ino` | OTA geflasht 1/11; oude ESP32-tegels uit Apple Home ("Matter Home") verwijderd |
+| 4 | Geheugen meten zonder Matter (48 u, Sheet 1/11 17:02 – 3/11 17:02, 576 rijen) | **0 herstarts** (v1.19: 4 in 11 dagen) · vrij **67-68 %** · grootste blok **239-251 KB** · Sheet volledig (1 rij per 5 min) |
 
-| Fase | Wat | Meetpunt |
-|---|---|---|
-| **H1** ✅ | `server.js` v2.10: vertaling naar de GET-endpoints van de HVAC + kringnamen | 21/10: `curl`-test geslaagd |
-| **H2** ✅ | Plugin v0.7: toestel "HVAC" in "Zarlardinge" | 21/10: 13 onderdelen verschenen en hernoemd; ⏳ elke tegel één keer schakelen |
-| **H3** | Parallelle test: oude Matter-tegels van de ESP32 ("Matter Home") naast de nieuwe van de RPi | Duur beslist FiDel; alles werkt via de bridge |
-
-### Stap 3 — v2.0: Matter weghalen + ventilatie ✅ *sketch klaar 1 nov 2026* · ⏳ *uploaden en testen*
-
-**Weg:** de Matter-`#include`'s · de 9 endpoints · de callbacks · `update_matter_sensors()` en de 5 s-update in `loop()` · `matterNuclearReset()` en de bijhorende vlag · de pagina's `/matter` en `/matter_reset` en de menulinks ernaar · serial `reset-matter` · `setOnOff()` in de kring-handlers en in `checkTstatPins()` · de pairing-wachtlus (max. 5 min) in `setup()`.
-
-**Blijft:** de ventilatie-override via de webslider, `total_power`, alle relais-, pomp- en poll-logica, en de Sheets-push (die verdwijnt pas in v2.1). Serial `reset-all` blijft (enkel de tekst "+ Matter" vervalt).
-
-**Ook in v2.0 (beslist 1/11/2026, i.p.v. de geplande v2.5):** de ventilatie volgens §5.2 en §6.4 — `ventPwm()` met correctie, laagste stand 0,3 V (ook bij het opstarten), 5 kHz.
-
-**In dezelfde commit:**
-- bestandsnaam → `ESP32C6_HVAC.ino` (op de Mac ook de schetsmap hernoemen — Arduino IDE eist dat map en bestand dezelfde naam hebben)
-- versieheader v2.0 "zonder Matter"; de opstarttekst toont nu nog "v1.10" en de header vermeldt nog `partitions_16mb.csv` — beide rechtzetten
-
-**Daarna:** het oude HVAC-accessoire uit Apple Home verwijderen en scènes/automaties koppelen aan de bridge-tegels.
-
-**Meetpunt:** 48 u zonder herstart · relais reageren meteen via de webpagina en via de bridge · Serial `Vent PWM: 16/255 ≈ 0,30 V (0% …)` zonder ventilatievraag.
-
-### Stap 4 — Geheugen meten zonder Matter (v2.0)
-
-| Meting v2.0 (zonder Matter) | free | largest | min_ever | Winst t.o.v. v1.19 |
-|---|---|---|---|---|
-| Boot | | | | |
-| Runtime `/json` (`ad` % / `ae` KB) | | | — | |
-| Runtime laagste waarde over 24 u | | | — | |
-
-Daarna in het Master-document: §4.4 (Matter) laten vervallen, §4.5 nieuwe heap-baseline, §4.6 versiehistorie, §11.1 bestandsnaam, §16 tabel (HVAC zonder Matter).
+> De Photon-knoppen van S-HVAC in Apple Home (*ECO => SCHUUR*, *ECO => WONING*, *HOME*) blijven: de **Photon S-HVAC stuurt nog de echte verwarming**.
 
 ### Stap 5 — Google Sheets enkel via het Dashboard (v2.1)
 
 *Beslist 18 okt 2026: geen enkele controller post nog zelf naar Google (§8.2). Twee delen: eerst instellingen (geen code), daarna pas de code weghalen. Nooit samen met v2.0.*
 
-**5a — Instellingen nakijken (geen codewijziging, mag al vóór v2.0)**
+**5a — Instellingen nakijken (geen codewijziging)** ✅ *1 nov 2026: HVAC-veld leeg, het Dashboard post (48 u-test: Sheet volledig)*
 
 | # | Waar | Wat | Meetpunt |
 |---|---|---|---|
@@ -491,13 +421,12 @@ Daarna in het Master-document: §4.4 (Matter) laten vervallen, §4.5 nieuwe heap
 
 | # | Wat | Wanneer |
 |---|---|---|
-| 1 | **Matter-migratie** — v2.0 klaar, nog uploaden en testen | §10 stap 3-4 |
 | 1b | **Bij ingebruikname in productie:** testinstellingen in `/settings` vervangen (namen BB, WP, BK, ZP, EP, KK, IK, echt vermogen, juiste room controller per kring). Geen codewijziging | bij overgang naar productie |
-| 1c | **NTP-timeout** bij het opstarten: tijd synchroniseert niet. Mogelijke oorzaak: met vast IP wordt de router (192.168.0.1) als DNS gebruikt. Eerst nakijken of dit blijft na een herstart | na v2.0 |
+| 1c | **NTP-timeout** bij het opstarten: tijd synchroniseert niet. Mogelijke oorzaak: met vast IP wordt de router (192.168.0.1) als DNS gebruikt. Nakijken in de opstartlog van v2.0 | open |
 | 1d | **WiFi-signaal** opnieuw meten op de definitieve plaats (testopstelling op de grond: −71 tot −79 dBm) | bij overgang naar productie |
-| 2 | **Overstap van de Photon naar de AnaBoX v2.0** (metingen klaar, §6.4): spanning bij 100 % meten en `VENT_VMAX` nakijken | na v2.0 |
-| 3 | **kWh per pompbeurt** echt berekenen (Q = m × Cp × ΔT) i.p.v. vaste 0,5 kWh | na v2.0 |
-| 4 | **Witte pagina op de iPhone** bij de ventilatieslider (vermoedelijk geheugenkrapte bij herladen) | herbekijken na v2.0 — misschien opgelost door de heap-winst |
+| 2 | **Overstap van de Photon naar de AnaBoX v2.0** (metingen klaar, §6.4): spanning bij 100 % meten en `VENT_VMAX` nakijken | bij overgang naar productie |
+| 3 | **kWh per pompbeurt** echt berekenen (Q = m × Cp × ΔT) i.p.v. vaste 0,5 kWh | later |
+| 4 | **Witte pagina op de iPhone** bij de ventilatieslider (vermoedelijk geheugenkrapte bij herladen) | herbekijken — waarschijnlijk opgelost (grootste blok nu ~247 KB) |
 | 5 | **Google Sheets enkel via het Dashboard** — beslist; instellingen nakijken (5a) en daarna de eigen push uit de sketch halen (v2.1). Zelfde regel voor ROOM, ECO en S-ENERGY | §10 stap 5 |
 | 6 | *Optie:* klem 5-6 van de Begetube via een vrije MCP-pin (13-15) als harde aan/uit. Rusttoestand zo kiezen dat de unit **blijft ventileren** bij een storing. Nieuwe JSON-key enkel na afspraak | later |
 | 7 | *Optie:* Sjalay-verbeteringen, één per versie (live-JSON vs. waarden enkel bij het laden van de pagina, statuscirkels, korte sectietitels) | later |
@@ -520,7 +449,8 @@ Daarna in het Master-document: §4.4 (Matter) laten vervallen, §4.5 nieuwe heap
 
 **Uploaden:**
 - **Eerste keer:** via USB-kabel.
-- **Daarna:** *Sketch → Export Compiled Binary*, dan het `.bin`-bestand uploaden op `http://192.168.0.70/update`. De controller herstart vanzelf.
+- **Daarna via OTA:** *Sketch → Export Compiled Binary*. In de map `build/esp32.esp32.esp32c6/` staan meerdere `.bin`-bestanden: kies **enkel `ESP32C6_HVAC.ino.bin`**, niet `.bootloader.bin`, `.partitions.bin` of `.merged.bin`. Upload dat op `http://192.168.0.70/update`; de controller herstart vanzelf.
+- **Flash Size moet op 16 MB staan** (zichtbaar in de compile-uitvoer als `FlashSize=16M`). Staat ze op 4 MB, dan kan de OTA mislukken: eerst juist zetten en opnieuw exporteren. "Not connected" in de IDE bij het exporteren is normaal.
 - **Na een update:** kijk op de hoofdpagina of alle kringen en pompen er normaal uitzien.
 
 ---
@@ -552,4 +482,4 @@ Volledige details staan in de versieheader bovenaan de sketch.
 
 ---
 
-*Zarlar thuisautomatisering — Filip Delannoy — bijgewerkt 1 november 2026*
+*Zarlar thuisautomatisering — Filip Delannoy — bijgewerkt 3 november 2026*
