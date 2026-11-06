@@ -4,12 +4,12 @@ De centrale controller in de kelder die de **verwarmingskringen**, de **ventilat
 
 | | |
 |---|---|
-| **Actieve versie** | **v2.0** (1 november 2026) — `Productie/ESP32C6_HVAC.ino`, zonder Matter |
+| **Actieve versie** | **v2.0** (1 november 2026) — map `ESP32C6_HVAC/`, zonder Matter |
 | **Adres** | `http://192.168.0.70` (vast IP, geen mDNS) |
 | **Board** | ESP32-C6 32-pin clone, MAC `58:8C:81:32:2B:90` |
 | **Status** | 🧪 **Testopstelling** (nog niet in productie) — kringen met testinstellingen, alle 7 op room80 |
 | **Volgende stap** | v2.0 ✅ getest (48 u zonder herstart, heap 68 % / 247 KB — §10 stap 4). Nu: eigen Sheets-push weg → **v2.1** (§10 stap 5b) |
-| **Systeemdocument** | [Zarlar Master Overnamedocument](https://github.com/FidelDworp/ZarlarApp/blob/main/ESP32_Zarlar/Zarlar_Master_Overnamedocument.md) — §4 gaat over deze controller |
+| **Systeemdocument** | [Zarlar Master Overnamedocument](https://github.com/FidelDworp/Zarlardinge-Home-Automation/blob/main/ESP32_Zarlar/Zarlar_Master_Overnamedocument.md) — §4 gaat over deze controller |
 
 > **Leeswijzer.** §1 en §2 zijn voor wie het systeem leert kennen. §3 t.e.m. §9 beschrijven wat er nu draait. §10 en §11 beschrijven wat er nog moet gebeuren. Bij twijfel is **de sketch de waarheid**, niet dit document.
 
@@ -93,14 +93,15 @@ De controller is bewust "dom": de slimheid (setpoints, aanwezigheid) zit in de r
 | Bestand | Wat |
 |---|---|
 | `README.md` | Dit document (in de root, zodat GitHub het op de voorpagina van de repo toont) |
-| `Productie/ESP32C6_HVAC.ino` | **Actieve sketch v2.0** (zonder Matter) |
-| `Productie/partitions.csv` | Geheugenindeling van de flash (16 MB, 2 × 6 MB app voor OTA). Moet naast het `.ino`-bestand staan. |
-| `Productie/HVAC_GoogleScript.gs` | Google Apps Script v5: ontvangt de HVAC-data (via het Dashboard) en schrijft ze in een Google Sheet |
-| `Old/Old HVAC_Photon.cpp` | De Particle Photon-sketch. ⚠️ **Draait nog in productie** op de Photon S-HVAC, die vandaag de echte verwarming stuurt |
-| `Old/ESP32C6_MATTER_HVAC.ino` | Vorige versie v1.19 (met Matter). **Alleen ter referentie** |
-| `Old/Old ESP32_HVAC-NoMatter.ino` | Oude ESP32-versie zonder Matter (januari 2026, V53.x). **Alleen ter referentie** |
-| `Old/Old HVAC_GoogleScript.gs` | Oud Apps Script (lange JSON-sleutels) — niet meer compatibel |
-| `Old/CHECKLIST` | Oude werklijst |
+| `ESP32C6_HVAC/` | **De sketch:** deze map openen in de Arduino IDE |
+| `ESP32C6_HVAC/ESP32C6_HVAC.ino` | **Actieve sketch v2.0** (zonder Matter) |
+| `ESP32C6_HVAC/partitions.csv` | Geheugenindeling van de flash (16 MB, 2 × 6 MB app voor OTA). Wordt automatisch gebruikt omdat hij naast het `.ino`-bestand staat. |
+| `GoogleScript/HVAC_GoogleScript.gs` | Google Apps Script v5: ontvangt de HVAC-data (via het Dashboard) en schrijft ze in een Google Sheet |
+| `old/HVAC_Photon.cpp` | De Particle Photon-sketch. ⚠️ **Draait nog in productie** op de Photon S-HVAC, die vandaag de echte verwarming stuurt |
+| `old/ESP32C6_MATTER_HVAC_v1.19.ino` | Vorige versie v1.19 (met Matter). **Alleen ter referentie** |
+| `old/ESP32_HVAC-NoMatter_V53.ino` | Oude ESP32-versie zonder Matter (januari 2026, V53.x). **Alleen ter referentie** |
+| `old/HVAC_GoogleScript_oud.gs` | Oud Apps Script (lange JSON-sleutels) — niet meer compatibel |
+| `old/CHECKLIST.md` | Oude werklijst |
 
 ---
 
@@ -476,7 +477,7 @@ HVAC .70  /json  ──►  Dashboard .60 (pollt, om de 5 cycli een POST)  ─�
 | v1.3-v1.6 | 1-3 mrt | Matter toegevoegd, `/matter`-pagina |
 | v1.2 | 26 feb | Vast IP 192.168.0.70 |
 | v1.1 | 10 jan | UI- en JSON-verbeteringen |
-| V53.x | jan 2026 | Eerste ESP32-versie zonder Matter (nu `Old/Old ESP32_HVAC-NoMatter.ino`) |
+| V53.x | jan 2026 | Eerste ESP32-versie zonder Matter (nu `old/ESP32_HVAC-NoMatter_V53.ino`) |
 
 Volledige details staan in de versieheader bovenaan de sketch.
 
