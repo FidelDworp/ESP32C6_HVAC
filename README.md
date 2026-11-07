@@ -9,7 +9,7 @@ De centrale controller in de kelder die de **verwarmingskringen**, de **ventilat
 | **Board** | ESP32-C6 32-pin clone, MAC `58:8C:81:32:2B:90` |
 | **Status** | 🧪 **Testopstelling** (nog niet in productie) — kringen met testinstellingen, alle 7 op room80 |
 | **Volgende stap** | v2.0 ✅ getest (48 u zonder herstart, heap 68 % / 247 KB — §10 stap 4). Nu: eigen Sheets-push weg → **v2.1** (§10 stap 5b) |
-| **Systeemdocument** | [Zarlar Master Overnamedocument](https://github.com/FidelDworp/Zarlardinge-Home-Automation/blob/main/ESP32_Zarlar/Zarlar_Master_Overnamedocument.md) — §4 gaat over deze controller |
+| **Systeemdocument** | [Zarlar Master Overnamedocument](https://github.com/FidelDworp/Zarlardinge-Home-Automation/blob/main/docs/Zarlar_Master_Overnamedocument.md) — §4 gaat over deze controller |
 
 > **Leeswijzer.** §1 en §2 zijn voor wie het systeem leert kennen. §3 t.e.m. §9 beschrijven wat er nu draait. §10 en §11 beschrijven wat er nog moet gebeuren. Bij twijfel is **de sketch de waarheid**, niet dit document.
 
