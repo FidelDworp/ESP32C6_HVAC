@@ -5,6 +5,13 @@ Apple Home loopt via de Matter-bridge op de RPi (server.js + matterbridge-zarlar
 
 Compileer met "partitions.csv" in de sketchfolder (app0 + app1 elk 6MB).
 
+23nov26       Version v2.1: WiFi-herstel na stroompanne. Vroeger 5 × 20 s proberen en dan VOORGOED AP
+              "HVAC-Setup" (geen rooms-poll, geen Sheets, geen NTP tot manuele reset). Nu:
+              één poging van 20 s bij boot, daarna wifiWatchdog() in loop(): nieuwe poging elke 30 s,
+              fallback-AP in AP_STA-modus na 3 min (STA blijft elke 60 s proberen), AP uit zodra
+              verbonden, herstart na 10 min zonder netwerk en zonder AP-gebruiker. NTP ook bij
+              herverbinden (startNtp()); na herstel meteen rooms pollen. pollRooms() roept zelf geen
+              WiFi.reconnect() meer aan. Nieuw: startAP(keepSta), stopFallbackAP(), startNtp(), wifiWatchdog().
 1nov26        Version v2.0: zonder Matter + ventilatie aangepast aan de metingen met Begetube 350 R + AnaBoX v2.0.
               MATTER WEG: includes, 9 endpoints + callbacks, update_matter_sensors() + 5 s-update in loop(),
               matterNuclearReset() + vlag, /matter en /matter_reset + menulinks, serial reset-matter,
@@ -720,9 +727,7 @@ void pollRooms() {
   Serial.println("\n=== POLLING ROOMS ===");
   
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WARNING: WiFi disconnected — reconnecting...");
-    WiFi.reconnect();
-    // Geen delay() — pollRooms() keert terug, loop() herprobeert bij volgende poll-cyclus
+    Serial.println("WARNING: geen WiFi — wifiWatchdog() herverbindt (v2.1)");
     return;
   } else {
     Serial.printf("WiFi OK - IP: %s, RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
@@ -1943,13 +1948,112 @@ void factoryResetNVS() {
 
 
 
+// ============== v2.1: WIFI-HERSTEL (na stroompanne) ==============
+// Met opgeslagen SSID nooit meer definitief naar AP. De router start na een
+// stroompanne trager op dan de ESP32; wifiWatchdog() blijft proberen.
+#define WIFI_RETRY_MS        30000UL    // STA: nieuwe poging elke 30 s
+#define WIFI_RETRY_AP_MS     60000UL    // AP_STA: elke 60 s (stoort captive portal minder)
+#define WIFI_AP_AFTER_MS    180000UL    // na 3 min zonder WiFi: fallback-AP (AP_STA)
+#define WIFI_REBOOT_MS      600000UL    // na 10 min zonder WiFi en zonder AP-gebruiker: herstart
+
+unsigned long wifi_lost_since = 0;      // 0 = verbonden
+unsigned long wifi_last_retry = 0;
+
+// keepSta = false : pure AP (nog geen SSID ingesteld)
+// keepSta = true  : fallback AP_STA — STA blijft op de achtergrond proberen
+void startAP(bool keepSta) {
+  WiFi.mode(keepSta ? WIFI_AP_STA : WIFI_AP);
+  WiFi.softAP("HVAC-Setup");
+  dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
+  ap_mode_active = true;
+  Serial.printf("\n=== CAPTIVE PORTAL ACTIVE (%s) ===\n", keepSta ? "AP_STA fallback" : "AP");
+  Serial.println("AP SSID: HVAC-Setup  IP: " + WiFi.softAPIP().toString());
+}
+
+void stopFallbackAP() {
+  dnsServer.stop();
+  WiFi.softAPdisconnect(true);   // AP uit, STA blijft
+  ap_mode_active = false;
+  Serial.println("[WiFi] Fallback-AP uit");
+}
+
+// wait = true bij boot (max 10 s wachten op sync), false bij herverbinden
+void startNtp(bool wait) {
+  Serial.println("Syncing NTP time...");
+  configTime(3600, 3600, "pool.ntp.org", "time.nist.gov");
+  setenv("TZ", "CET-1CEST,M3.5.0/02,M10.5.0/03", 1);
+  tzset();
+  if (!wait) return;
+  int retry = 0;
+  time_t now = 0;
+  struct tm timeinfo;
+  while (now < 1700000000 && retry < 20) {
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    delay(500);
+    Serial.print(".");
+    retry++;
+  }
+  if (now >= 1700000000) {
+    Serial.println(" OK!");
+    Serial.print("Time: "); Serial.println(getFormattedDateTime());
+  } else {
+    Serial.println(" TIMEOUT");
+    Serial.println("Tijd wordt niet getoond tot NTP sync lukt");
+  }
+}
+
+void wifiWatchdog() {
+  if (strlen(wifi_ssid) == 0) return;           // pure AP-modus: niets te bewaken
+  unsigned long now = millis();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    if (wifi_lost_since != 0) {
+      Serial.printf("[WiFi] ✓ Terug verbonden na %lu s: %s\n",
+                    (now - wifi_lost_since) / 1000, WiFi.localIP().toString().c_str());
+      wifi_lost_since = 0;
+      if (ap_mode_active) stopFallbackAP();
+      startNtp(false);
+      last_poll = 0;                             // meteen rooms pollen
+    }
+    return;
+  }
+
+  // ── Niet verbonden ──
+  if (wifi_lost_since == 0) {
+    wifi_lost_since = now;
+    wifi_last_retry = now;
+    Serial.println("[WiFi] ✗ Verbinding kwijt — blijf proberen");
+  }
+  unsigned long lost = now - wifi_lost_since;
+
+  if (!ap_mode_active && lost >= WIFI_AP_AFTER_MS) {
+    Serial.println("[WiFi] 3 min geen netwerk -> fallback-AP HVAC-Setup (STA blijft proberen)");
+    startAP(true);
+  }
+
+  unsigned long retry_ms = ap_mode_active ? WIFI_RETRY_AP_MS : WIFI_RETRY_MS;
+  if (now - wifi_last_retry >= retry_ms) {
+    wifi_last_retry = now;
+    Serial.printf("[WiFi] Nieuwe poging (%lu s zonder netwerk)\n", lost / 1000);
+    WiFi.disconnect(false, false);
+    WiFi.begin(wifi_ssid, wifi_pass);
+  }
+
+  if (lost >= WIFI_REBOOT_MS && WiFi.softAPgetStationNum() == 0) {
+    Serial.println("[WiFi] 10 min geen netwerk en niemand op de AP -> herstart");
+    delay(200);
+    ESP.restart();
+  }
+}
+
 // ============== DEEL 5/5: SETUP & LOOP ==============
 
 void setup() {
   Serial.begin(115200);
   delay(1500);  // Wacht tot Serial Monitor klaar is
   while (Serial.available()) Serial.read();  // Flush eventuele rommel
-  Serial.println("\n\n=== HVAC Controller v2.0 ===");
+  Serial.println("\n\n=== HVAC Controller v2.1 ===");
   Serial.println("Commando's: 'R' = NVS reset, 'reset-all', 'status'");
 
   // v1.7 FIX 4: Crash-log lezen bij boot — toont of vorige run gecrasht is
@@ -2145,83 +2249,31 @@ void setup() {
                   static_ip_str, gateway.toString().c_str());
   }
 
+  // v2.1: één poging van 20 s bij boot; daarna neemt wifiWatchdog() in loop() over.
+  //       (vroeger 5 × 20 s en dan voorgoed AP "HVAC-Setup" — fout bij trage router na stroompanne)
+  WiFi.setAutoReconnect(true);
   if (strlen(wifi_ssid) > 0) {
     Serial.printf("\nConnecting to '%s'...\n", wifi_ssid);
-    
-    int retry_count = 0;
-    const int MAX_RETRIES = 5;
-    bool connected = false;
-    
-    while (!connected && retry_count < MAX_RETRIES) {
-      WiFi.begin(wifi_ssid, wifi_pass);
-      
-      unsigned long start_attempt = millis();
-      while (WiFi.status() != WL_CONNECTED && (millis() - start_attempt) < 20000) {
-        delay(500);
-        Serial.print(".");
-      }
-      
-      if (WiFi.status() == WL_CONNECTED) {
-        connected = true;
-        Serial.println("\n✓ WiFi connected!");
-      } else {
-        retry_count++;
-        Serial.printf("\n✗ Attempt %d/%d failed\n", retry_count, MAX_RETRIES);
-        
-        if (retry_count < MAX_RETRIES) {
-          Serial.println("Disconnecting and retrying...");
-          WiFi.disconnect();
-          delay(2000);
-        }
-      }
-    }
-    
-    if (!connected) {
-      Serial.println("\n✗ All WiFi attempts failed -> AP mode");
-    }
-  }
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\nWiFi failed -> AP mode");
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP("HVAC-Setup");
-    ap_mode_active = true;
-    
-    Serial.println("\n=== CAPTIVE PORTAL ACTIVE ===");
-    Serial.println("AP SSID: HVAC-Setup");
-    Serial.println("AP IP: " + WiFi.softAPIP().toString());
-    Serial.println("DNS: Wildcard redirect to settings page");
-    Serial.println("→ Connect and settings will auto-open!");
-    
-    dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
-  } else {
-    Serial.println("\nWiFi connected: " + WiFi.localIP().toString());
-    Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
-    
-    // NTP SYNC
-    Serial.println("\nSyncing NTP time...");
-    configTime(3600, 3600, "pool.ntp.org", "time.nist.gov");
-    setenv("TZ", "CET-1CEST,M3.5.0/02,M10.5.0/03", 1);
-    tzset();
-    
-    int retry = 0;
-    time_t now = 0;
-    struct tm timeinfo;
-    while (now < 1700000000 && retry < 20) {
-      time(&now);
-      localtime_r(&now, &timeinfo);
+    WiFi.begin(wifi_ssid, wifi_pass);
+    unsigned long start_attempt = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - start_attempt) < 20000) {
       delay(500);
       Serial.print(".");
-      retry++;
     }
-    
-    if (now >= 1700000000) {
-      Serial.println(" OK!");
-      Serial.print("Time: "); Serial.println(getFormattedDateTime());
-    } else {
-      Serial.println(" TIMEOUT");
-      Serial.println("Tijd wordt niet getoond tot NTP sync lukt");
-    }
+    Serial.println();
+  }
+
+  if (strlen(wifi_ssid) == 0) {
+    Serial.println("Geen WiFi geconfigureerd -> AP mode");
+    startAP(false);
+  } else if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("WiFi connected: " + WiFi.localIP().toString());
+    Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
+    startNtp(true);
+  } else {
+    Serial.println("✗ WiFi nog niet bereikbaar -> blijf proberen (fallback-AP na 3 min)");
+    wifi_lost_since = millis();
+    wifi_last_retry = millis();
   }
 
   // Geen mDNS (v1.7 FIX 5). Gebruik static IP 192.168.0.70. mDNS komt terug in een latere versie.
@@ -2256,6 +2308,7 @@ void checkTstatPins() {
 }
 
 void loop() {
+  wifiWatchdog();                                // v2.1
   if (ap_mode_active) dnsServer.processNextRequest();
 
   uptime_sec = millis() / 1000;
