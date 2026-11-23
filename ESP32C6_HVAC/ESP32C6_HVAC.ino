@@ -5,6 +5,11 @@ Apple Home loopt via de Matter-bridge op de RPi (server.js + matterbridge-zarlar
 
 Compileer met "partitions.csv" in de sketchfolder (app0 + app1 elk 6MB).
 
+23nov26       Version v2.2: Versie zichtbaar: #define HVAC_VERSION op één plek → opstarttekst, koptekst
+              Status + Settings, OTA-pagina en /json (nieuwe sleutel "ver"; bestaande sleutels ongewijzigd).
+              OTA-herstart gefixt: /update, /reboot en /save_settings deden delay() + ESP.restart() in de
+              AsyncWebServer-callback (AsyncTCP-taak) → herstart bleef uit. Nu scheduleReboot() + uitvoering
+              in loop(). OTA controleert Update.begin/write/end en toont de foutmelding bij mislukken.
 23nov26       Version v2.1: WiFi-herstel na stroompanne. Vroeger 5 × 20 s proberen en dan VOORGOED AP
               "HVAC-Setup" (geen rooms-poll, geen Sheets, geen NTP tot manuele reset). Nu:
               één poging van 20 s bij boot, daarna wifiWatchdog() in loop(): nieuwe poging elke 30 s,
@@ -79,6 +84,8 @@ Compileer met "partitions.csv" in de sketchfolder (app0 + app1 elk 6MB).
 
 // v1.7 FIX 1: Verplicht voor ESP32-C6 (RISC-V) in Arduino IDE — zonder dit werkt Serial niet correct
 #define Serial Serial0
+
+#define HVAC_VERSION "2.2"   // v2.2: één plek — boot, webpagina's, /json ("ver")
 
 
 // ============== DEEL 1/5: HEADERS, STRUCTS & HELPER FUNCTIES ==============
@@ -274,6 +281,14 @@ unsigned long last_temp_read = 0;
 unsigned long uptime_sec = 0;
 unsigned long last_slow = 0;
 bool ap_mode_active = false;
+
+// v2.2: herstart nooit vanuit een AsyncWebServer-callback (AsyncTCP-taak) — loop() doet het
+volatile bool  reboot_pending = false;
+unsigned long  reboot_at      = 0;
+void scheduleReboot(unsigned long delay_ms) {
+  reboot_at      = millis() + delay_ms;
+  reboot_pending = true;
+}
 bool mcp_available = false;
 
 // v1.15: TSTAT snelcheck — vorige staat bijhouden voor edge-detectie
@@ -1009,7 +1024,8 @@ const char* buildLogJson() {
     ",\"w\":%.2f,\"x\":%d"
     ",\"y\":%d,\"z\":%.4f"
     ",\"aa\":%d,\"ab\":%.4f"
-    ",\"ac\":%d,\"ad\":%lu,\"ae\":%lu}",
+    ",\"ac\":%d,\"ad\":%lu,\"ae\":%lu"
+    ",\"ver\":\"" HVAC_VERSION "\"}",           // v2.2
     uptime_sec,
     sch_temps[0], sch_temps[1], sch_temps[2],
     sch_temps[3], sch_temps[4], sch_temps[5],
@@ -1110,6 +1126,7 @@ void streamMainPage(AsyncWebServerRequest* request) {
   // Chunk 2 — header, status banner, sidebar (~0.4 KB)
   p->print(F("<div class='header'><div class='header-left'>"));
   p->print(room_id);
+  p->print(F(" <span style='font-size:13px;opacity:.8'>v" HVAC_VERSION "</span>"));   // v2.2
   p->print(F("</div><div class='header-right'>"));
   p->print(uptime_sec);
   p->print(F(" s &nbsp;&nbsp; "));
@@ -1463,6 +1480,7 @@ void setupWebServer() {
       ".reboot{background:#c00;}.reboot:hover{background:#900;}"
       "</style></head><body>"
       "<h1>OTA Firmware Update</h1>"
+      "<p>Huidige firmware: <b>HVAC v" HVAC_VERSION "</b></p>"
       "<form method='POST' action='/update' enctype='multipart/form-data'>"
       "<input type='file' name='update' accept='.bin'><br><br>"
       "<button class='button' type='submit'>Upload Firmware</button>"
@@ -1473,25 +1491,44 @@ void setupWebServer() {
     request->send(p);
   });
 
+  // v2.2: geen delay()/ESP.restart() meer in de callback (AsyncTCP-taak) — scheduleReboot() + loop().
+  //       Update.begin/write/end worden gecontroleerd; fout = duidelijke melding, geen herstart.
   server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request) {
-    bool success = !Update.hasError();
-    request->send(200, "text/html", success 
-      ? "<h2 style='color:#0f0'>Update OK!</h2><p>Rebooting...</p>" 
-      : "<h2 style='color:#f00'>Update FAILED!</h2>");
-    if (success) { delay(1000); ESP.restart(); }
+    bool success = !Update.hasError() && Update.isFinished();
+    if (success) {
+      request->send(200, "text/html; charset=utf-8",
+        "<meta http-equiv='refresh' content='15;url=/'>"
+        "<h2 style='color:#080;font-family:Arial'>Update OK — herstart…</h2>"
+        "<p style='font-family:Arial'>Pagina laadt over 15 s opnieuw.</p>");
+      Serial.println("[OTA] OK — herstart over 1,5 s");
+      scheduleReboot(1500);
+    } else {
+      char msg[160];
+      snprintf(msg, sizeof(msg),
+        "<h2 style='color:#c00;font-family:Arial'>Update MISLUKT</h2>"
+        "<p style='font-family:Arial'>Fout: %s</p><a href='/update'>Opnieuw</a>",
+        Update.errorString());
+      request->send(200, "text/html; charset=utf-8", msg);
+      Serial.printf("[OTA] MISLUKT: %s\n", Update.errorString());
+    }
   }, [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
     if (!index) {
-      Serial.println("\n=== OTA UPDATE ===");
-      Update.begin(UPDATE_SIZE_UNKNOWN);
+      Serial.printf("\n=== OTA UPDATE: %s ===\n", filename.c_str());
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial);
     }
-    Update.write(data, len);
-    if (final && Update.end(true)) Serial.println("OTA OK");
+    if (len && Update.isRunning()) {
+      if (Update.write(data, len) != len) Update.printError(Serial);
+    }
+    if (final) {
+      if (Update.end(true)) Serial.printf("[OTA] %u bytes geschreven\n", (unsigned)(index + len));
+      else Update.printError(Serial);
+    }
   });
 
   server.on("/reboot", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(200, "text/html", "<h2>Rebooting...</h2>");
-    delay(500);
-    ESP.restart();
+    request->send(200, "text/html; charset=utf-8",
+      "<meta http-equiv='refresh' content='15;url=/'><h2 style='font-family:Arial'>Herstart…</h2>");
+    scheduleReboot(1000);   // v2.2
   });
 
 
@@ -1527,6 +1564,7 @@ void setupWebServer() {
       "</style></head><body>"
       "<div class='header'><div class='header-left'>"));
     p->print(room_id);
+    p->print(F(" <span style='font-size:13px;opacity:.8'>v" HVAC_VERSION "</span>"));   // v2.2
     p->print(F("</div><div class='header-right'>Instellingen</div></div>"
       "<div class='container'><div class='sidebar'>"
       "<a href='/'>Status</a>"
@@ -1712,8 +1750,7 @@ void setupWebServer() {
 
     Serial.println("Settings saved!");
     request->send(200, "text/html", "<h2 style='text-align:center;color:#369;'>Opgeslagen! Rebooting...</h2>");
-    delay(2000);
-    ESP.restart();
+    scheduleReboot(2000);   // v2.2: niet meer delay()/restart in de callback
   });
 
   server.on("/circuit_override_on", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -2053,7 +2090,7 @@ void setup() {
   Serial.begin(115200);
   delay(1500);  // Wacht tot Serial Monitor klaar is
   while (Serial.available()) Serial.read();  // Flush eventuele rommel
-  Serial.println("\n\n=== HVAC Controller v2.1 ===");
+  Serial.println("\n\n=== HVAC Controller v" HVAC_VERSION " ===");
   Serial.println("Commando's: 'R' = NVS reset, 'reset-all', 'status'");
 
   // v1.7 FIX 4: Crash-log lezen bij boot — toont of vorige run gecrasht is
@@ -2308,6 +2345,12 @@ void checkTstatPins() {
 }
 
 void loop() {
+  // v2.2: geplande herstart (OTA, /reboot, settings) — hier, niet in de web-callback
+  if (reboot_pending && (long)(millis() - reboot_at) >= 0) {
+    Serial.println("[REBOOT] Geplande herstart");
+    Serial.flush();
+    ESP.restart();
+  }
   wifiWatchdog();                                // v2.1
   if (ap_mode_active) dnsServer.processNextRequest();
 
