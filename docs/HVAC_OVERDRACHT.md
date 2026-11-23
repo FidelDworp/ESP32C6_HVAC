@@ -1,6 +1,6 @@
 # Overdracht — HVAC-controller (ESP32C6_HVAC)
 
-*Stand 7 november 2026 — Filip Delannoy (FiDel), Zarlardinge (BE)*
+*Stand 23 november 2026 — Filip Delannoy (FiDel), Zarlardinge (BE)*
 
 Dit document start een nieuw gesprek met Claude over de HVAC-controller in de kelder: verwarmingskringen, ventilatie (Begetube 350 R via AnaBoX) en de warmte-uitwisseling met de ECO-boiler. Alle details: [`README.md`](../README.md).
 
@@ -13,13 +13,16 @@ Dit document start een nieuw gesprek met Claude over de HVAC-controller in de ke
 | | |
 |---|---|
 | Adres | `http://192.168.0.70` (vast IP, nog geen mDNS) |
-| Sketch | `ESP32C6_HVAC/ESP32C6_HVAC.ino` **v2.0** (1/11/2026), zonder Matter |
-| Klaar om te uploaden | `bin/ESP32C6_HVAC_v2.0.ino.bin` |
+| Sketch | `ESP32C6_HVAC/ESP32C6_HVAC.ino` **v2.2** (23/11/2026), zonder Matter |
+| Klaar om te uploaden | `bin/ESP32C6_HVAC_v2.2.ino.bin` |
 | Bibliotheken | OneWireNg, Adafruit MCP23X17 (+ BusIO), AsyncTCP + ESPAsyncWebServer, ArduinoJson v7 |
 | Sheet | S-HVAC `1LL7swNRIVl2qfREHxAU7nCq9fH9zTUxa37s0IduHTXY` (logging hoort via het Dashboard te lopen) |
 | Systeemdocument | Master-document §4 (`Zarlardinge-Home-Automation/docs/`) |
 
-## 2. Stand (7/11)
+## 2. Stand (23/11)
+
+- **v2.2 getest en in gebruik (23/11):** versie zichtbaar (`HVAC_VERSION`: koptekst, OTA-pagina, `/json` `ver`); herstart na OTA, `/reboot` en opslaan via `scheduleReboot()` in `loop()` (vroeger bleef de herstart uit). **v2.1:** wifi-herstel na stroompanne, NTP ook na herverbinden.
+- **23/11 stroompanne:** de controller ging na 5 × 20 s voorgoed in AP-modus. Opgelost in deze versie: blijft de router proberen (elke 30 s), fallback-AP in AP_STA na 3 min, AP uit zodra verbonden, herstart na 10 min zonder netwerk en zonder AP-gebruiker. Zie de lessen "stroompanne" in de overkoepelende overdracht.
 
 - **Testopstelling**, nog niet in productie: de Photon S-HVAC stuurt nog de echte verwarming (`old/HVAC_Photon.cpp`).
 - v2.0 getest: 48 u zonder herstart, heap 68 % / grootste blok 247 KB.

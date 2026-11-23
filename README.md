@@ -4,7 +4,7 @@ De centrale controller in de kelder die de **verwarmingskringen**, de **ventilat
 
 | | |
 |---|---|
-| **Actieve versie** | **v2.0** (1 november 2026) — map `ESP32C6_HVAC/`, zonder Matter |
+| **Actieve versie** | **v2.2** (23 november 2026) — map `ESP32C6_HVAC/`, zonder Matter |
 | **Adres** | `http://192.168.0.70` (vast IP, geen mDNS) |
 | **Board** | ESP32-C6 32-pin clone, MAC `58:8C:81:32:2B:90` |
 | **Status** | 🧪 **Testopstelling** (nog niet in productie) — kringen met testinstellingen, alle 7 op room80 |
@@ -96,7 +96,7 @@ De controller is bewust "dom": de slimheid (setpoints, aanwezigheid) zit in de r
 | `ESP32C6_HVAC/` | **De sketch:** deze map openen in de Arduino IDE |
 | `ESP32C6_HVAC/ESP32C6_HVAC.ino` | **Actieve sketch v2.0** (zonder Matter) |
 | `ESP32C6_HVAC/partitions.csv` | Geheugenindeling van de flash (16 MB, 2 × 6 MB app voor OTA). Wordt automatisch gebruikt omdat hij naast het `.ino`-bestand staat. |
-| `bin/ESP32C6_HVAC_v2.0.ino.bin` | De sketch klaar om te uploaden via `/update`, gecompileerd door Claude (ESP32-core 3.3.12, nieuwste bibliotheken). Alleen de laatste versie |
+| `bin/ESP32C6_HVAC_v2.2.ino.bin` | De sketch klaar om te uploaden via `/update`, gebouwd in de Arduino IDE met de vaste versies uit de overkoepelende overdracht §5. Alleen de laatste versie |
 | `GoogleScript/HVAC_GoogleScript.gs` | Google Apps Script v5: ontvangt de HVAC-data (via het Dashboard) en schrijft ze in een Google Sheet |
 | `old/HVAC_Photon.cpp` | De Particle Photon-sketch. ⚠️ **Draait nog in productie** op de Photon S-HVAC, die vandaag de echte verwarming stuurt |
 | `old/ESP32C6_MATTER_HVAC_v1.19.ino` | Vorige versie v1.19 (met Matter). **Alleen ter referentie** |
@@ -461,7 +461,9 @@ HVAC .70  /json  ──►  Dashboard .60 (pollt, om de 5 cycli een POST)  ─�
 
 | Versie | Datum | Wat |
 |---|---|---|
-| **v2.0** | 1 nov 2026 | Zonder Matter (bestand `ESP32C6_HVAC.ino`); ventilatie met correctie voor AnaBoX v2.0, laagste stand 0,3 V, 5 kHz |
+| **v2.2** | 23 nov 2026 | Versie zichtbaar (koptekst, OTA, `/json` `ver`); herstart na OTA/reboot/opslaan vanuit `loop()` |
+| v2.1 | 23 nov 2026 | Wifi-herstel na stroompanne: nooit meer voorgoed AP (`HVAC-Setup`), NTP na herverbinden |
+| v2.0 | 1 nov 2026 | Zonder Matter (bestand `ESP32C6_HVAC.ino`); ventilatie met correctie voor AnaBoX v2.0, laagste stand 0,3 V, 5 kHz |
 | v1.19 | 18 mrt 2026 | Matter: relais schakelen meteen vanuit Apple Home |
 | v1.18 | 17 mrt | ECO-keys aangepast aan de nieuwe ECO-sketch (`b`, `g`, `h`, `i`) |
 | v1.17 | 17 mrt | Room-keys aangepast aan de nieuwe room-sketch (`b`, `g`, `c`, `e`, `v`) |
